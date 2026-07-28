@@ -17,8 +17,5 @@ Release/
 *.lib
 *.vcxproj.user
 
-# 별도 원격 저장소로 관리되는 개인 유틸 라이브러리 (자체 .git 보유)
-MyGame/WindowAPI/
-
 # Claude Code 로컬 설정
 .claude/
