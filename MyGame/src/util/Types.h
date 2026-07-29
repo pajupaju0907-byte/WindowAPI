@@ -33,10 +33,9 @@ struct AABB
 // 블럭의 물리 상태
 enum class PhysicsState
 {
-    Falling,
-    Locked,
-    Awake,
-    Sleeping
+    Airborne,  // 공중 상태: 그리드(서브셀) 기반 낙하 중, 물리 미적용
+    Awake,     // 바닥 상태: 착지 직후, 물리 시뮬레이션(흔들림) 활성
+    Sleeping   // 바닥 상태: 안정화되어 물리 계산 스킵
 };
 
 // TODO: 어떤 블럭 종류를 스폰할지 구분하는 용도.
@@ -44,7 +43,6 @@ enum class PhysicsState
 enum class BlockType
 {
     Tetromino,
-    Circle,
     GiantTetromino,
     Heavy
 };
@@ -54,4 +52,5 @@ enum class BlockType
 struct SpriteInfo
 {
     std::string id;
+	std::shared_ptr <Gdiplus::Bitmap> bitmap;
 };

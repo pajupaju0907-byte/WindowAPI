@@ -1,4 +1,6 @@
-﻿#include "TetrominoBlock.h"
+﻿#include "pch.h"
+
+#include "TetrominoBlock.h"
 
 TetrominoBlock::TetrominoBlock()
 {

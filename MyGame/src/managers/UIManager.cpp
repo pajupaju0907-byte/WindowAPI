@@ -1,4 +1,6 @@
-﻿#include "UIManager.h"
+﻿#include "pch.h"
+
+#include "UIManager.h"
 #include "../ui/UIElement.h"
 
 UIManager& UIManager::GetInstance()

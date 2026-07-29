@@ -1,4 +1,6 @@
-﻿#include "PlayScene.h"
+﻿#include "pch.h"
+
+#include "PlayScene.h"
 
 void PlayScene::Enter()
 {
@@ -12,7 +14,8 @@ void PlayScene::Exit()
 
 void PlayScene::Update(float deltaTime)
 {
-    // TODO: BlockManager/PhysicsManager/CollisionManager/CameraManager/UIManager 갱신 호출 직접 구현
+    // TODO: BlockManager::UpdateFalling/MoveCurrentBlock(공중 블럭 그리드 낙하/이동),
+    // PhysicsManager::Update(바닥 블럭 물리), CollisionManager, CameraManager, UIManager 갱신 호출 직접 구현
     (void)deltaTime;
 }
 

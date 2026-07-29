@@ -1,4 +1,6 @@
-﻿#include "HeavyBlock.h"
+﻿#include "pch.h"
+
+#include "HeavyBlock.h"
 
 HeavyBlock::HeavyBlock()
 {

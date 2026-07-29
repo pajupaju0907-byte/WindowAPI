@@ -1,4 +1,6 @@
-﻿#include "TimeManager.h"
+﻿#include "pch.h"
+
+#include "TimeManager.h"
 
 TimeManager& TimeManager::GetInstance()
 {

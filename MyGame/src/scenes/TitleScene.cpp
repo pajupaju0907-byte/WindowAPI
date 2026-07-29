@@ -1,4 +1,6 @@
-﻿#include "TitleScene.h"
+﻿#include "pch.h"
+
+#include "TitleScene.h"
 
 void TitleScene::Enter()
 {

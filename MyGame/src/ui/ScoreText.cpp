@@ -1,4 +1,6 @@
-﻿#include "ScoreText.h"
+﻿#include "pch.h"
+
+#include "ScoreText.h"
 
 ScoreText::ScoreText() = default;
 

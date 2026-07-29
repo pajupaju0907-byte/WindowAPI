@@ -1,4 +1,6 @@
-﻿#include "GameOverPanel.h"
+﻿#include "pch.h"
+
+#include "GameOverPanel.h"
 
 GameOverPanel::GameOverPanel() = default;
 

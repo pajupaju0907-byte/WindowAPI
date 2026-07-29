@@ -1,4 +1,6 @@
-﻿#include "HeightGauge.h"
+﻿#include "pch.h"
+
+#include "HeightGauge.h"
 
 HeightGauge::HeightGauge() = default;
 

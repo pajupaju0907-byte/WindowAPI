@@ -1,4 +1,6 @@
-﻿#include "GameOverScene.h"
+﻿#include "pch.h"
+
+#include "GameOverScene.h"
 
 void GameOverScene::Enter()
 {

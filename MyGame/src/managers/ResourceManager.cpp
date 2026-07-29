@@ -1,4 +1,6 @@
-﻿#include "ResourceManager.h"
+﻿#include "pch.h"
+
+#include "ResourceManager.h"
 
 ResourceManager& ResourceManager::GetInstance()
 {
@@ -8,8 +10,16 @@ ResourceManager& ResourceManager::GetInstance()
 
 void ResourceManager::LoadSprite(const std::string& path)
 {
-    // TODO: 실제 이미지 로딩 및 m_sprites 등록 직접 구현
-    (void)path;
+	wstring widPath(path.begin(), path.end());
+	auto bitmap = std::make_shared<Gdiplus::Bitmap>(widPath.c_str());
+    
+    SpriteInfo info;
+	info.id = path;
+	info.bitmap = bitmap;
+	
+    m_sprites[path] = info;
+
+
 }
 
 void ResourceManager::LoadJson(const std::string& path)

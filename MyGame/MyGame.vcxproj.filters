@@ -51,6 +51,9 @@
     <ClInclude Include="MyGame.h">
       <Filter>헤더 파일</Filter>
     </ClInclude>
+    <ClInclude Include="pch.h">
+      <Filter>헤더 파일</Filter>
+    </ClInclude>
     <ClInclude Include="src\util\Types.h">
       <Filter>src\util</Filter>
     </ClInclude>
@@ -111,16 +114,10 @@
     <ClInclude Include="src\collision\AABBCollider.h">
       <Filter>src\collision</Filter>
     </ClInclude>
-    <ClInclude Include="src\collision\CircleCollider.h">
-      <Filter>src\collision</Filter>
-    </ClInclude>
     <ClInclude Include="src\objects\Block.h">
       <Filter>src\objects</Filter>
     </ClInclude>
     <ClInclude Include="src\objects\TetrominoBlock.h">
-      <Filter>src\objects</Filter>
-    </ClInclude>
-    <ClInclude Include="src\objects\CircleBlock.h">
       <Filter>src\objects</Filter>
     </ClInclude>
     <ClInclude Include="src\objects\GiantTetrominoBlock.h">
@@ -153,6 +150,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="MyGame.cpp">
+      <Filter>소스 파일</Filter>
+    </ClCompile>
+    <ClCompile Include="pch.cpp">
       <Filter>소스 파일</Filter>
     </ClCompile>
     <ClCompile Include="src\util\Timer.cpp">
@@ -197,16 +197,10 @@
     <ClCompile Include="src\collision\AABBCollider.cpp">
       <Filter>src\collision</Filter>
     </ClCompile>
-    <ClCompile Include="src\collision\CircleCollider.cpp">
-      <Filter>src\collision</Filter>
-    </ClCompile>
     <ClCompile Include="src\objects\Block.cpp">
       <Filter>src\objects</Filter>
     </ClCompile>
     <ClCompile Include="src\objects\TetrominoBlock.cpp">
-      <Filter>src\objects</Filter>
-    </ClCompile>
-    <ClCompile Include="src\objects\CircleBlock.cpp">
       <Filter>src\objects</Filter>
     </ClCompile>
     <ClCompile Include="src\objects\GiantTetrominoBlock.cpp">

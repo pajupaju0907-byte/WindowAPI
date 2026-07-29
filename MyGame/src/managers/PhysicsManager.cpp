@@ -1,4 +1,6 @@
-﻿#include "PhysicsManager.h"
+﻿#include "pch.h"
+
+#include "PhysicsManager.h"
 #include "../objects/Block.h"
 
 PhysicsManager& PhysicsManager::GetInstance()
@@ -11,13 +13,14 @@ PhysicsManager::~PhysicsManager() = default;
 
 void PhysicsManager::Update(float deltaTime)
 {
-    // TODO: activeBlocks 순회하며 ApplyGravity + Integrate 호출 직접 구현
+    // TODO: m_activeBlocks(Awake 상태 블럭만) 순회하며 ApplyGravity + Integrate 호출 직접 구현.
+    // Airborne 블럭은 대상이 아님 (BlockManager::UpdateFalling에서 별도 처리)
     (void)deltaTime;
 }
 
 void PhysicsManager::ApplyGravity(Block* block)
 {
-    // TODO: 중력 가속도를 블럭에 힘으로 적용하는 로직 직접 구현
+    // TODO: 바닥 상태(Awake)의 흔들림 표현을 위한 중력 가속도를 힘으로 적용하는 로직 직접 구현
     (void)block;
 }
 

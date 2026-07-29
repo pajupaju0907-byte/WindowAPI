@@ -1,4 +1,6 @@
-﻿#include "AABBCollider.h"
+﻿#include "pch.h"
+
+#include "AABBCollider.h"
 
 AABBCollider::AABBCollider(Vector2 min, Vector2 max)
     : m_min(min)
@@ -8,7 +10,7 @@ AABBCollider::AABBCollider(Vector2 min, Vector2 max)
 
 bool AABBCollider::CheckCollision(const Collider& other) const
 {
-    // TODO: AABB-AABB, AABB-Circle 충돌 판정 직접 구현
+    // TODO: AABB-AABB 충돌 판정 직접 구현
     (void)other;
     return false;
 }

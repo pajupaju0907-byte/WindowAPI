@@ -1,4 +1,6 @@
-﻿#include "CollisionManager.h"
+﻿#include "pch.h"
+
+#include "CollisionManager.h"
 
 CollisionManager& CollisionManager::GetInstance()
 {

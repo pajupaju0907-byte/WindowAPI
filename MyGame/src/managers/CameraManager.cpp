@@ -1,4 +1,6 @@
-﻿#include "CameraManager.h"
+﻿#include "pch.h"
+
+#include "CameraManager.h"
 
 CameraManager& CameraManager::GetInstance()
 {

@@ -1,4 +1,6 @@
-﻿#include "GiantTetrominoBlock.h"
+﻿#include "pch.h"
+
+#include "GiantTetrominoBlock.h"
 
 GiantTetrominoBlock::GiantTetrominoBlock()
 {
