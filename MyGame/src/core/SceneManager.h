@@ -21,7 +21,7 @@ public:
     void ChangeScene(SceneType type);
 
     void Update(float deltaTime);
-    void Render();
+    void Render(HDC hdc);
 
 private:
     SceneManager() = default;

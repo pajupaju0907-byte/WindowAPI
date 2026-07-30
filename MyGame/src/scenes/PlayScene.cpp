@@ -1,11 +1,15 @@
 ﻿#include "pch.h"
 
 #include "PlayScene.h"
+#include "../managers/ResourceManager.h"
+#include "../managers/RenderManager.h"
 
 void PlayScene::Enter()
 {
     // TODO: 그리드/카메라 등 플레이 상태 초기화 직접 구현
+    ResourceManager::GetInstance().LoadSprite("assets/block.png");
 }
+
 
 void PlayScene::Exit()
 {
@@ -19,7 +23,8 @@ void PlayScene::Update(float deltaTime)
     (void)deltaTime;
 }
 
-void PlayScene::Render()
+void PlayScene::Render(HDC hdc)
 {
-    // TODO: RenderManager/UIManager 렌더링 호출 직접 구현
+    const SpriteInfo& blockSprite = ResourceManager::GetInstance().GetSpriteInfo("assets/block.png");
+    RenderManager::GetInstance().DrawSpriteRotated(hdc, blockSprite, { 0.0f, 0.0f }, 0.0f, 0);
 }

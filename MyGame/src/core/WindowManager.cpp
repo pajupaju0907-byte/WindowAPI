@@ -3,7 +3,7 @@
 #include "WindowManager.h"
 #include "../util/Constants.h"
 #include "../managers/RenderManager.h"
-
+#include "SceneManager.h"
 namespace
 {
 	const wchar_t* WINDOW_CLASS_NAME = L"WobbleBlocksWindowClass";
@@ -24,6 +24,7 @@ namespace
 
 			// 실제 그리기는 RenderManager에 위임 (여기서 격자선이 그려짐)
 			RenderManager::GetInstance().Render(hdc);
+			SceneManager::GetInstance().Render(hdc);
 
 			EndPaint(hWnd, &ps);
 			return 0;

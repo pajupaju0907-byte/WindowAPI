@@ -16,5 +16,6 @@ public:
     virtual void Update(float deltaTime) = 0;
 
     // 매 프레임 호출되는 렌더링 로직
-    virtual void Render() = 0;
+    // hdc는 WM_PAINT에서 얻은 디바이스 컨텍스트를 그대로 받아 RenderManager에 전달하기 위함
+    virtual void Render(HDC hdc) = 0;
 };

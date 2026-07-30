@@ -6,6 +6,7 @@
 #include "framework.h"
 #include "MyGame.h"
 #include "src/core/WindowManager.h"
+#include "src/core/SceneManager.h"
 
 // 창 생성/메시지 루프는 WindowManager(싱글톤)가 전담한다.
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -24,6 +25,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     {
         return FALSE;
     }
+    SceneManager::GetInstance().ChangeScene(SceneType::Play);
+    InvalidateRect(WindowManager::GetInstance().GetWindowHandle(), nullptr, FALSE);
 
     int result = WindowManager::GetInstance().MessageLoop();
 

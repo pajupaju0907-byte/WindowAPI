@@ -18,7 +18,7 @@ void TitleScene::Update(float deltaTime)
     (void)deltaTime;
 }
 
-void TitleScene::Render()
+void TitleScene::Render(HDC hdc)
 {
     // TODO: 타이틀 화면 렌더링 로직 직접 구현
 }

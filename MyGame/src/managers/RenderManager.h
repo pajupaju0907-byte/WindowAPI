@@ -14,7 +14,7 @@ public:
 	/// @param sprite 그릴 스프라이트 정보
 	/// @param position 그릴 위치 (좌상단 기준)
 	/// @param angle 회전 각도(도 단위)
-	void DrawSpriteRotated(HDC hdc,const SpriteInfo& sprite,Vector2 Position, float angle);
+	void DrawSpriteRotated(HDC hdc,const SpriteInfo& sprite,Vector2 Position, float angle, int frameIndex);
 
 	/// @brief 현재 프레임의 화면을 그린다 (지금은 격자선만).
 	/// @param hdc WM_PAINT에서 얻은 디바이스 컨텍스트
