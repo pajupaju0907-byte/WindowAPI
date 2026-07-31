@@ -7,8 +7,4 @@ class TetrominoBlock : public Block
 {
 public:
     TetrominoBlock();
-
-private:
-    // TODO: 실제 테트로미노 모양(4칸의 상대 좌표) 정의는 직접 설계할 것
-    Vector2 m_cellShape[4];
 };

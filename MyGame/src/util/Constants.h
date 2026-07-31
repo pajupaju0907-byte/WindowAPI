@@ -10,6 +10,10 @@ namespace Constants
     // 48px 타일 * 10x20 그리드 = 480x960 창 크기 
     constexpr float TILE_SIZE = 48.0f;
 
+    //발판 사이즈
+    constexpr int FLOOR_WIDTH_TILES = 6;
+    constexpr int FLOOR_HEIGHT_TILES = 3;
+
     constexpr int WINDOW_WIDTH = static_cast<int>(GRID_WIDTH * TILE_SIZE);
     constexpr int WINDOW_HEIGHT = static_cast<int>(GRID_HEIGHT * TILE_SIZE);
 
@@ -24,13 +28,27 @@ namespace Constants
     constexpr float SUBCELL_SIZE = TILE_SIZE / GRID_SUBCELL_SCALE;
 
     constexpr int MOVE_STEP_SUBCELLS = 1;
-    constexpr int FALL_STEP_SUBCELLS = GRID_SUBCELL_SCALE;
 
-    // TODO: 한 칸 낙하까지 걸리는 시간(초). 실제 체감/밸런스에 맞게 직접 조정할 것
-    constexpr float FALL_STEP_INTERVAL = 0.0f;
+    // 낙하도 좌우 이동처럼 서브셀 1칸(=0.5칸)씩 내려가도록. 전체 낙하 속도는 유지하려고
+    // FALL_STEP_INTERVAL도 기존(1칸=2서브셀당 0.8초) 대비 절반인 0.4초로 같이 줄임 — 속도가 원하던 것과 다르면 조정할 것
+    constexpr int FALL_STEP_SUBCELLS = 1;
+
+    // 한 서브셀 낙하까지 걸리는 시간(초).
+    constexpr float FALL_STEP_INTERVAL = 0.4f;
+
+    // 좌우 이동 키를 누르고 있을 때 반복 이동 간격(초). 처음 누른 순간은 즉시 반응하고, 그 뒤로 이 간격마다 반복.
+    constexpr float MOVE_REPEAT_INTERVAL = 0.1f;
 
     //격자선 색상 ( 연한 회색 )
     constexpr COLORREF GRID_LINE_COLOR = RGB(220, 220, 220);
-    //블록 타일 색상 (파란색 ) 
+    //블록 타일 색상 (파란색 )
 	constexpr COLORREF BLOCK_TILE_COLOR = RGB(30, 100, 240);
+
+    // 프레임 제한: 목표 FPS와, 그로부터 계산한 한 프레임당 목표 시간(초)
+    constexpr int TARGET_FPS = 60;
+    constexpr double TARGET_FRAME_SECONDS = 1.0 / TARGET_FPS;
+
+    // FPS 표시(디버그용) 위치/색상
+    constexpr int FPS_TEXT_MARGIN = 8;
+    constexpr COLORREF FPS_TEXT_COLOR = RGB(255, 0, 0);
 }

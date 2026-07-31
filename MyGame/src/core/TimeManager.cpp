@@ -10,10 +10,26 @@ TimeManager& TimeManager::GetInstance()
 
 void TimeManager::Update()
 {
-    // TODO: QueryPerformanceCounter 등을 이용한 실제 델타타임 계산 직접 구현
+    LARGE_INTEGER currentCounter;
+    QueryPerformanceCounter(&currentCounter);
+
+    if (!m_initialized)
+    {
+        QueryPerformanceFrequency(&m_frequency);
+        m_lastCounter = currentCounter;
+        m_initialized = true;
+    }
+
+    m_deltaTime = static_cast<float>(currentCounter.QuadPart - m_lastCounter.QuadPart) / static_cast<float>(m_frequency.QuadPart);
+    m_lastCounter = currentCounter;
 }
 
 float TimeManager::GetDeltaTime() const
 {
     return m_deltaTime;
+}
+
+float TimeManager::GetFPS() const
+{
+    return m_deltaTime > 0.0f ? 1.0f / m_deltaTime : 0.0f;
 }

@@ -8,16 +8,29 @@ InputManager& InputManager::GetInstance()
     return instance;
 }
 
+void InputManager::Update()
+{
+    for (int key = 0; key < KEY_COUNT; ++key)
+    {
+        m_previousKeys[key] = m_currentKeys[key];
+        m_currentKeys[key] = (GetAsyncKeyState(key) & 0x8000) != 0;
+    }
+}
+
 bool InputManager::IsKeyDown(int key) const
 {
-    // TODO: GetAsyncKeyState 등을 이용한 실제 키 상태 판정 직접 구현
-    (void)key;
-    return false;
+    if (key < 0 || key >= KEY_COUNT)
+    {
+        return false;
+    }
+    return m_currentKeys[key];
 }
 
 bool InputManager::IsKeyPressed(int key) const
 {
-    // TODO: 이전 프레임 키 상태와 비교하는 엣지 판정 직접 구현
-    (void)key;
-    return false;
+    if (key < 0 || key >= KEY_COUNT)
+    {
+        return false;
+    }
+    return m_currentKeys[key] && !m_previousKeys[key];
 }

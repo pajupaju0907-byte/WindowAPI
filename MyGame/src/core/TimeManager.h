@@ -11,6 +11,9 @@ public:
 
     float GetDeltaTime() const;
 
+    // 디버그 표시용 순간 FPS (1 / 델타타임)
+    float GetFPS() const;
+
 private:
     TimeManager() = default;
     ~TimeManager() = default;
@@ -18,4 +21,9 @@ private:
     TimeManager& operator=(const TimeManager&) = delete;
 
     float m_deltaTime = 0.0f;
+
+    // QueryPerformanceCounter 기반 델타타임 계산용 상태
+    LARGE_INTEGER m_frequency{};
+    LARGE_INTEGER m_lastCounter{};
+    bool m_initialized = false;
 };

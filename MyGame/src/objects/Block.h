@@ -20,7 +20,10 @@ public:
 
     // 공중 상태 전용: 그리드(서브셀) 기준 이동. 물리 연산 없이 좌표만 스텝 이동한다.
     void MoveHorizontal(int subCellDelta);
-    void StepDown();
+
+    // 한 칸 아래로 이동을 시도한다. GridManager 점유 칸을 확인해서
+    // 이동했으면 true, 바닥/다른 블럭에 막혀 착지해야 하면 false를 반환한다.
+    bool StepDown();
 
     // 바닥 상태 전용: 착지 이후의 물리 연산(흔들림 등). Awake 상태에서만 호출되어야 한다.
     void ApplyForce(Vector2 force);
@@ -31,11 +34,24 @@ public:
     // 확정하고 물리 시뮬레이션을 시작시키는 지점.
     void Land();
 
+    // 스폰 직후 BlockManager가 초기 그리드 좌표를 지정할 때 사용
+    void SetGridPosition(int gridX, int gridY);
+
+    // 현재 물리 상태에 맞는 렌더링용 월드 좌표 (Airborne이면 그리드 좌표를 픽셀로 환산, 아니면 m_position)
+    Vector2 GetRenderPosition() const;
+
+    const std::string& GetSpriteId() const;
+
 protected:
     // unique_ptr<Collider>가 불완전 타입을 가리키므로, 기본 생성자는 반드시 .cpp(Collider가 완전한 타입인 곳)에서 정의한다.
     Block();
 
     int m_id = 0;
+
+    // 블럭을 구성하는 칸들의 원점 기준 상대 좌표 (테트리스 칸 단위, 예: O자는 (0,0)(1,0)(0,1)(1,1)).
+    // 이동/충돌(StepDown, MoveHorizontal)과 렌더링이 여기를 순회하므로, 파생 클래스 생성자에서 반드시 채워야 한다.
+    static constexpr int CELL_COUNT = 4;
+    Vector2 m_cellShape[CELL_COUNT];
 
     // 공중 상태(Airborne)에서 쓰는 그리드 좌표. 단위는 서브셀(1 서브셀 = 0.5 테트리스 칸).
     int m_gridX = 0;

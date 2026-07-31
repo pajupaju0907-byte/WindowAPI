@@ -2,21 +2,49 @@
 
 #include "Block.h"
 #include "../collision/Collider.h"
+#include "../managers/GridManager.h"
+#include "../util/Constants.h"
 
 Block::Block() = default;
 Block::~Block() = default;
 
 void Block::MoveHorizontal(int subCellDelta)
 {
-    // TODO: m_gridX를 subCellDelta(서브셀 단위)만큼 이동시키되,
-    // 그리드 경계 및 GridManager 점유 상태를 확인해 이동 가능 여부를 판단하는 로직 직접 구현
-    (void)subCellDelta;
+    int nextGridX = m_gridX + subCellDelta;
+
+    // TODO: 지금은 테스트용 1칸(=GRID_SUBCELL_SCALE 서브셀 너비)짜리 블럭 기준으로 그 너비만큼만 확인.
+    // 실제 테트로미노 모양(cellShape)이 생기면 모양 전체 칸을 확인하도록 확장할 것.
+    // 너비 전체(2칸)를 확인해야 하는 이유: 이동은 서브셀 1칸씩인데 블럭은 2칸 너비라서,
+    // 원점 칸 하나만 보면 반대쪽 끝이 이미 그리드를 벗어나도 못 잡아낼 수 있음
+    for (int offset = 0; offset < Constants::GRID_SUBCELL_SCALE; ++offset)
+    {
+        if (GridManager::GetInstance().GetCellState(nextGridX + offset, m_gridY) != 0)
+        {
+            return;
+        }
+    }
+
+    m_gridX = nextGridX;
 }
 
-void Block::StepDown()
+bool Block::StepDown()
 {
-    // TODO: m_gridY를 Constants::FALL_STEP_SUBCELLS만큼 내리되,
-    // 바닥/다른 블럭에 막히면 낙하 대신 착지(Land) 흐름으로 이어지도록 BlockManager와 협력해 직접 구현
+    int nextGridY = m_gridY + Constants::FALL_STEP_SUBCELLS;
+
+    // TODO: 지금은 테스트용 1칸(=GRID_SUBCELL_SCALE 서브셀 높이)짜리 블럭 기준으로 그 높이만큼만 확인.
+    // 실제 테트로미노 모양(cellShape)이 생기면 모양 전체 칸을 확인하도록 확장할 것.
+    // 높이 전체(2칸)를 확인해야 하는 이유: 낙하가 서브셀 1칸씩인데 블럭은 2칸 높이라서,
+    // 원점 칸 하나만 보면 바닥 쪽 끝이 이미 바닥을 파고들어도 못 잡아낼 수 있음 (MoveHorizontal 오른쪽 경계 버그와 같은 원인)
+    for (int offset = 0; offset < Constants::GRID_SUBCELL_SCALE; ++offset)
+    {
+        if (GridManager::GetInstance().GetCellState(m_gridX, nextGridY + offset) != 0)
+        {
+            return false; // 막혔음 = 착지해야 함
+        }
+    }
+
+    m_gridY = nextGridY;
+    return true;
 }
 
 void Block::ApplyForce(Vector2 force)
@@ -32,6 +60,26 @@ void Block::Integrate(float deltaTime)
     (void)deltaTime;
 }
 
+void Block::SetGridPosition(int gridX, int gridY)
+{
+    m_gridX = gridX;
+    m_gridY = gridY;
+}
+
+Vector2 Block::GetRenderPosition() const
+{
+    if (m_physicsState == PhysicsState::Airborne)
+    {
+        return { m_gridX * Constants::SUBCELL_SIZE, m_gridY * Constants::SUBCELL_SIZE };
+    }
+    return m_position;
+}
+
+const std::string& Block::GetSpriteId() const
+{
+    return m_spriteId;
+}
+
 void Block::WakeUp()
 {
     // TODO: Sleeping -> Awake 전환 및 관련 상태 갱신 직접 구현
@@ -40,6 +88,6 @@ void Block::WakeUp()
 
 void Block::Land()
 {
-    // TODO: 그리드 좌표(m_gridX, m_gridY)를 서브셀 크기(Constants::SUBCELL_SIZE) 기준으로
-    // 월드 좌표(m_position)에 대입하고, m_physicsState를 Awake로 전환하는 로직 직접 구현
+    m_position = { m_gridX * Constants::SUBCELL_SIZE, m_gridY * Constants::SUBCELL_SIZE };
+    m_physicsState = PhysicsState::Awake;
 }

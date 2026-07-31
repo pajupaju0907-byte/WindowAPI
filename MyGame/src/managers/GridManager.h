@@ -4,7 +4,7 @@
 
 class Block;
 
-// TODO: 셀 하나의 상태를 int로 임시 표현. 실제 표현 방식(점유 여부, 블럭 참조 등)은 직접 설계할 것
+// 셀 하나의 상태: 0 = 빈 칸, 1 = 점유(바닥 또는 착지한 블럭)
 using CellArray = std::vector<std::vector<int>>;
 
 // 바닥 그리드의 셀 점유 상태를 관리하는 싱글톤.
@@ -15,6 +15,9 @@ class GridManager
 {
 public:
     static GridManager& GetInstance();
+
+    // m_cells를 그리드 크기로 초기화하고, 바닥이 차지하는 영역을 미리 점유 칸으로 표시한다
+    void Init();
 
     int GetCellState(int subCellX, int subCellY) const;
     void MarkOccupied(Block* block);

@@ -2,6 +2,12 @@
 
 #include "BlockManager.h"
 #include "../objects/Block.h"
+#include "../objects/TetrominoBlock.h"
+#include "../objects/GiantTetrominoBlock.h"
+#include "../objects/HeavyBlock.h"
+#include "../util/Constants.h"
+#include "GridManager.h"
+#include "../core/InputManager.h"
 
 BlockManager& BlockManager::GetInstance()
 {
@@ -13,25 +19,102 @@ BlockManager::~BlockManager() = default;
 
 void BlockManager::SpawnBlock(BlockType type)
 {
-    // TODO: type에 맞는 파생 Block 생성 후 m_blocks에 등록, currentFallingBlock 갱신 직접 구현
-    (void)type;
+    std::unique_ptr<Block> spawnedBlock;
+    switch (type)
+    {
+    case BlockType::Tetromino:
+        spawnedBlock = std::make_unique<TetrominoBlock>();
+        break;
+    case BlockType::GiantTetromino:
+        spawnedBlock = std::make_unique<GiantTetrominoBlock>();
+        break;
+    case BlockType::Heavy:
+        spawnedBlock = std::make_unique<HeavyBlock>();
+        break;
+    }
+
+    // 그리드 가로 중앙, 맨 위 줄에서 스폰 시작
+    spawnedBlock->SetGridPosition(Constants::GRID_WIDTH_SUBCELLS / 2, 0);
+
+    m_currentFallingBlock = spawnedBlock.get();
+    m_blocks.push_back(std::move(spawnedBlock));
+    m_fallTimer = Constants::FALL_STEP_INTERVAL;
 }
 
 void BlockManager::UpdateFalling(float deltaTime)
 {
-    // TODO: m_fallTimer를 deltaTime만큼 줄이다가 Constants::FALL_STEP_INTERVAL이 되면
-    // m_currentFallingBlock->StepDown() 호출하고 타이머 재설정하는 로직 직접 구현
-    (void)deltaTime;
+    if (m_currentFallingBlock == nullptr) return;
+
+	m_fallTimer -= deltaTime;
+
+    if (m_fallTimer <= 0.0f)
+    {
+		bool moved = m_currentFallingBlock->StepDown();
+		m_fallTimer += Constants::FALL_STEP_INTERVAL;
+
+        if (!moved)
+        {
+            LockBlock(m_currentFallingBlock);
+            m_currentFallingBlock = nullptr;
+        }
+    }
+
 }
 
 void BlockManager::MoveCurrentBlock(int subCellDelta)
 {
-    // TODO: m_currentFallingBlock->MoveHorizontal(subCellDelta) 호출 직접 구현
-    (void)subCellDelta;
+    if (m_currentFallingBlock == nullptr) return;
+
+    m_currentFallingBlock->MoveHorizontal(subCellDelta);
+}
+
+void BlockManager::UpdateMovementInput(float deltaTime)
+{
+    InputManager& input = InputManager::GetInstance();
+
+    int direction = 0;
+    if (input.IsKeyDown(VK_LEFT)) direction = -1;
+    else if (input.IsKeyDown(VK_RIGHT)) direction = 1;
+
+    if (direction == 0)
+    {
+        return;
+    }
+
+    // 새로 누른 순간이면 타이머를 0으로 만들어서 이번 프레임에 바로 이동하게 한다
+    if (input.IsKeyPressed(VK_LEFT) || input.IsKeyPressed(VK_RIGHT))
+    {
+        m_moveTimer = 0.0f;
+    }
+
+    m_moveTimer -= deltaTime;
+    if (m_moveTimer <= 0.0f)
+    {
+        MoveCurrentBlock(direction * Constants::MOVE_STEP_SUBCELLS);
+        m_moveTimer += Constants::MOVE_REPEAT_INTERVAL;
+    }
 }
 
 void BlockManager::LockBlock(Block* block)
 {
-    // TODO: 낙하 종료 처리(Block::Land() 호출, GridManager::MarkOccupied 통지 등) 직접 구현
-    (void)block;
+    if (block == nullptr) return;
+
+    block->Land();
+    GridManager::GetInstance().MarkOccupied(block);
+}
+
+Block* BlockManager::GetCurrentFallingBlock() const
+{
+    return m_currentFallingBlock;
+}
+
+std::vector<Block*> BlockManager::GetAllBlocks() const
+{
+    std::vector<Block*> allBlocks;
+    allBlocks.reserve(m_blocks.size());
+    for (const std::unique_ptr<Block>& block : m_blocks)
+    {
+        allBlocks.push_back(block.get());
+    }
+    return allBlocks;
 }

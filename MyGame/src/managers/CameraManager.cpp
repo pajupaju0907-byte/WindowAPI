@@ -22,6 +22,7 @@ void CameraManager::Update(float deltaTime)
 
 Vector2 CameraManager::WorldToScreen(Vector2 worldPos) const
 {
-    // TODO: 카메라 position 기준 좌표 변환 직접 구현
-    return worldPos;
+
+  
+    return worldPos - m_position;
 }

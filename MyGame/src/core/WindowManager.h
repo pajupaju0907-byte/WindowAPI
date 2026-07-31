@@ -16,6 +16,9 @@ public:
 
     HWND GetWindowHandle() const;
 
+    // 더블 버퍼링용 오프스크린 DC. WM_PAINT에서 여기에 전부 그린 뒤 화면에 한 번에 복사(BitBlt)해서 깜빡임을 없앤다.
+    HDC GetBackBufferDC() const;
+
 private:
     WindowManager() = default;
     ~WindowManager() = default;
@@ -24,4 +27,7 @@ private:
 
     HINSTANCE m_hInstance = nullptr;
     HWND m_hWnd = nullptr;
+
+    HDC m_backBufferDC = nullptr;
+    HBITMAP m_backBufferBitmap = nullptr;
 };
