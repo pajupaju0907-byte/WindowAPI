@@ -5,6 +5,7 @@
 
 #include "framework.h"
 #include "MyGame.h"
+#include "src/managers/ResourceManager.h"
 #include "src/core/WindowManager.h"
 #include "src/core/SceneManager.h"
 
@@ -21,6 +22,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     ULONG_PTR gdiplusToken;
     Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr);
 
+    // GDI+ 초기화 완료
+
     if (!WindowManager::GetInstance().Init(hInstance, nCmdShow))
     {
         return FALSE;
@@ -29,6 +32,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     InvalidateRect(WindowManager::GetInstance().GetWindowHandle(), nullptr, FALSE);
 
     int result = WindowManager::GetInstance().MessageLoop();
+
+    // 모든 리소스를 명시적으로 해제하여 GDI+가 활성화된 상태에서
+    // 비트맵들이 파괴되게 합니다.
+    ResourceManager::GetInstance().Shutdown();
 
     Gdiplus::GdiplusShutdown(gdiplusToken);
     return result;

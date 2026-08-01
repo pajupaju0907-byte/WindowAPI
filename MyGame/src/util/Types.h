@@ -1,6 +1,8 @@
 ﻿#pragma once
 
 #include <string>
+#include <memory>
+#include <gdiplus.h>
 
 // 여러 클래스가 공용으로 쓰는 기본 타입 모음.
 // 다른 헤더보다 먼저 include되는 경우가 많으므로 이 파일 자체는 다른 게임 헤더를 include하지 않는다.
@@ -52,5 +54,5 @@ enum class BlockType
 struct SpriteInfo
 {
     std::string id;
-	std::shared_ptr <Gdiplus::Bitmap> bitmap;
+    std::shared_ptr<Gdiplus::Bitmap> bitmap;
 };

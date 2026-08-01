@@ -13,6 +13,8 @@ public:
     void LoadSprite(const std::string& path);
     void LoadJson(const std::string& path);
     const SpriteInfo& GetSpriteInfo(const std::string& id) const;
+    // 애플리케이션 종료 또는 리소스 재로딩 시 모든 로드된 리소스를 해제합니다.
+    void Shutdown();
 
 private:
     ResourceManager() = default;

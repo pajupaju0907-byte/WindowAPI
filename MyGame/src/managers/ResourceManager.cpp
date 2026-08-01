@@ -2,6 +2,8 @@
 
 #include "ResourceManager.h"
 
+#include <gdiplus.h>
+
 ResourceManager& ResourceManager::GetInstance()
 {
     static ResourceManager instance;
@@ -34,4 +36,14 @@ const SpriteInfo& ResourceManager::GetSpriteInfo(const std::string& id) const
     static const SpriteInfo emptySpriteInfo;
     auto it = m_sprites.find(id);
     return it != m_sprites.end() ? it->second : emptySpriteInfo;
+}
+
+void ResourceManager::Shutdown()
+{
+    // 명시적으로 모든 SpriteInfo의 shared_ptr을 해제하여
+    // GDI+가 활성화된 상태에서 비트맵이 파괴되도록 보장합니다.
+    for (auto& p : m_sprites) {
+        p.second.bitmap.reset();
+    }
+    m_sprites.clear();
 }
