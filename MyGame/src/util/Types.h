@@ -48,7 +48,11 @@ enum class BlockType
     GiantTetromino,
     Heavy
 };
-
+// 테트리스 블럭 모양 이넘
+enum class TetrominoShape
+{
+    I, O, T, S, Z, J, L
+};
 // ResourceManager가 로드하고 RenderManager가 그리는 스프라이트 정보.
 // TODO: 실제 표현 방식(비트맵 핸들, UV 좌표 등)은 렌더링 방식에 맞게 직접 설계할 것
 struct SpriteInfo

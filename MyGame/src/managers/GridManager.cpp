@@ -1,7 +1,6 @@
 ﻿#include "pch.h"
 
 #include "GridManager.h"
-#include "../objects/Block.h"
 #include "../util/Constants.h"
 
 GridManager& GridManager::GetInstance()
@@ -41,23 +40,14 @@ int GridManager::GetCellState(int subCellX, int subCellY) const
 
     return m_cells[subCellY][subCellX];
 }
-
-void GridManager::MarkOccupied(Block* block)
+void GridManager::SetCellOccupied(int subCellX, int subCellY)
 {
-    // TODO: 지금은 테스트용 1칸짜리 블럭 기준으로 원점 칸만 표시.
-    // 실제 테트로미노 모양(cellShape)이 생기면 블럭이 차지하는 모든 칸을 순회하며 표시하도록 확장할 것
-    if (block == nullptr)
+    if (subCellX < 0 || subCellX >= Constants::GRID_WIDTH_SUBCELLS ||
+        subCellY < 0 || subCellY >= Constants::GRID_HEIGHT_SUBCELLS)
     {
         return;
     }
 
-    Vector2 pos = block->GetRenderPosition();
-    int subCellX = static_cast<int>(pos.x / Constants::SUBCELL_SIZE);
-    int subCellY = static_cast<int>(pos.y / Constants::SUBCELL_SIZE);
-
-    if (subCellX >= 0 && subCellX < Constants::GRID_WIDTH_SUBCELLS &&
-        subCellY >= 0 && subCellY < Constants::GRID_HEIGHT_SUBCELLS)
-    {
-        m_cells[subCellY][subCellX] = 1;
-    }
+    m_cells[subCellY][subCellX] = 1;
 }
+

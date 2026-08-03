@@ -6,5 +6,5 @@
 class TetrominoBlock : public Block
 {
 public:
-    TetrominoBlock();
+	TetrominoBlock(TetrominoShape shape);
 };

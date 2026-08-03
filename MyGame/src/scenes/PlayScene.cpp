@@ -9,13 +9,19 @@
 #include "../objects/Block.h"
 #include "../util/Constants.h"
 #include "../util/Types.h"
-
+#include "../managers/PhysicsManager.h"
 void PlayScene::Enter()
 {
     // TODO: 카메라 등 나머지 플레이 상태 초기화 직접 구현
     GridManager::GetInstance().Init();
 
     ResourceManager::GetInstance().LoadSprite("assets/block1.png");
+    ResourceManager::GetInstance().LoadSprite("assets/block2.png");
+    ResourceManager::GetInstance().LoadSprite("assets/block3.png");
+    ResourceManager::GetInstance().LoadSprite("assets/block4.png");
+    ResourceManager::GetInstance().LoadSprite("assets/block5.png");
+    ResourceManager::GetInstance().LoadSprite("assets/block6.png");
+    ResourceManager::GetInstance().LoadSprite("assets/block7.png");
     ResourceManager::GetInstance().LoadSprite("assets/background.png");
     ResourceManager::GetInstance().LoadSprite("assets/topleft.png");
     ResourceManager::GetInstance().LoadSprite("assets/topcenter.png");
@@ -48,6 +54,8 @@ void PlayScene::Update(float deltaTime)
     // TODO: PhysicsManager::Update(바닥 블럭 물리), CollisionManager, CameraManager, UIManager 갱신 호출 직접 구현
     BlockManager::GetInstance().UpdateFalling(deltaTime);
     BlockManager::GetInstance().UpdateMovementInput(deltaTime);
+    BlockManager::GetInstance().UpdateRotationInput();
+    PhysicsManager::GetInstance().Update(deltaTime);
 }
 
 void PlayScene::RenderStaticLayer(HDC hdc)
@@ -127,12 +135,15 @@ void PlayScene::Render(HDC hdc)
 
     BitBlt(hdc, 0, 0, Constants::WINDOW_WIDTH, Constants::WINDOW_HEIGHT, m_staticLayerDC, 0, 0, SRCCOPY);
 
-    // 블럭 그리기 (지금은 실제 모양(cellShape) 대신 원점 위치에 타일 1개만 임시로 표시).
+  
     // 낙하 중이든 착지했든 전부 매 프레임 바뀔 수 있는 부분이라 정적 레이어에 넣지 않고 여기서 매번 새로 그린다
     for (Block* block : BlockManager::GetInstance().GetAllBlocks())
     {
         const SpriteInfo& blockSprite = ResourceManager::GetInstance().GetSpriteInfo(block->GetSpriteId());
-        Vector2 blockScreenPos = CameraManager::GetInstance().WorldToScreen(block->GetRenderPosition());
-        RenderManager::GetInstance().DrawSpriteRotated(hdc, blockSprite, blockScreenPos, { Constants::TILE_SIZE, Constants::TILE_SIZE }, 0.0f, 0);
+        for (int cellIndex = 0; cellIndex < block->GetCellCount(); ++cellIndex)
+        {
+            Vector2 cellScreenPos = CameraManager::GetInstance().WorldToScreen(block->GetCellRenderPosition(cellIndex));
+            RenderManager::GetInstance().DrawSpriteRotated(hdc, blockSprite, cellScreenPos, { Constants::TILE_SIZE, Constants::TILE_SIZE }, 0.0f, 0);
+        }
     }
 }

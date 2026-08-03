@@ -8,6 +8,8 @@
 #include "src/managers/ResourceManager.h"
 #include "src/core/WindowManager.h"
 #include "src/core/SceneManager.h"
+#include <cstdlib>
+#include <ctime>
 
 // 창 생성/메시지 루프는 WindowManager(싱글톤)가 전담한다.
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -17,7 +19,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
-
+    srand(static_cast<unsigned int>(time(nullptr)));
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     ULONG_PTR gdiplusToken;
     Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr);

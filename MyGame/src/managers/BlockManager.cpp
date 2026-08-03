@@ -8,6 +8,7 @@
 #include "../util/Constants.h"
 #include "GridManager.h"
 #include "../core/InputManager.h"
+#include <cstdlib>
 
 BlockManager& BlockManager::GetInstance()
 {
@@ -23,8 +24,11 @@ void BlockManager::SpawnBlock(BlockType type)
     switch (type)
     {
     case BlockType::Tetromino:
-        spawnedBlock = std::make_unique<TetrominoBlock>();
-        break;
+    {
+        TetrominoShape randomShape = static_cast<TetrominoShape>(rand() % 7);
+        spawnedBlock = std::make_unique<TetrominoBlock>(randomShape);
+    }
+    break;
     case BlockType::GiantTetromino:
         spawnedBlock = std::make_unique<GiantTetrominoBlock>();
         break;
@@ -45,7 +49,8 @@ void BlockManager::UpdateFalling(float deltaTime)
 {
     if (m_currentFallingBlock == nullptr) return;
 
-	m_fallTimer -= deltaTime;
+	float fallSpeedMultiplier = InputManager::GetInstance().IsKeyDown(VK_DOWN) ? Constants::SOFT_DROP_MULTIPLIER : 1.0f;
+	m_fallTimer -= deltaTime * fallSpeedMultiplier;
 
     if (m_fallTimer <= 0.0f)
     {
@@ -56,6 +61,7 @@ void BlockManager::UpdateFalling(float deltaTime)
         {
             LockBlock(m_currentFallingBlock);
             m_currentFallingBlock = nullptr;
+            SpawnBlock(BlockType::Tetromino);
         }
     }
 
@@ -95,12 +101,28 @@ void BlockManager::UpdateMovementInput(float deltaTime)
     }
 }
 
+void BlockManager::UpdateRotationInput()
+{
+    if (m_currentFallingBlock == nullptr) return;
+
+    InputManager& input = InputManager::GetInstance();
+
+    if (input.IsKeyPressed('Z'))
+    {
+        m_currentFallingBlock->Rotate(-1);
+    }
+    else if (input.IsKeyPressed('X'))
+    {
+        m_currentFallingBlock->Rotate(1);
+    }
+}
+
 void BlockManager::LockBlock(Block* block)
 {
     if (block == nullptr) return;
 
     block->Land();
-    GridManager::GetInstance().MarkOccupied(block);
+    block->MarkOccupiedCells();
 }
 
 Block* BlockManager::GetCurrentFallingBlock() const

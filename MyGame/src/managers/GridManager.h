@@ -2,7 +2,6 @@
 
 #include <vector>
 
-class Block;
 
 // 셀 하나의 상태: 0 = 빈 칸, 1 = 점유(바닥 또는 착지한 블럭)
 using CellArray = std::vector<std::vector<int>>;
@@ -20,7 +19,7 @@ public:
     void Init();
 
     int GetCellState(int subCellX, int subCellY) const;
-    void MarkOccupied(Block* block);
+    void SetCellOccupied(int subCellX, int subCellY);
 
 private:
     GridManager() = default;

@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <vector>
+#include "../util/Constants.h"
 
 class Block;
 
@@ -16,6 +17,14 @@ public:
 
     // 바닥 상태에서의 흔들림 표현을 위한 중력 적용. 공중 낙하 속도와는 무관하다.
     void ApplyGravity(Block* block);
+
+    // block이 차지하는 칸들 중 바닥을 가장 깊이 파고든 정도를 찾아서, 파고들었으면 밀어냄
+    void ResolveFloorCollision(Block* block);
+
+    // block이 other 위에 겹쳐 있으면 block을 밀어올림 (아래에 있는 쪽은 그대로)
+    void ResolveBlockPairCollision(Block* block, Block* other);
+    // 존재하는 모든 블럭 쌍에 대해 ResolveBlockPairCollision을 돌림
+    void ResolveBlockCollisions();
 
     // 개별 블럭이 아니라 탑 전체가 안정적인지 판단 (전체 판단은 매니저의 책임)
     bool CheckGlobalStability() const;

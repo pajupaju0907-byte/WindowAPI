@@ -24,6 +24,8 @@ public:
     // 누른 순간 즉시 1회 이동하고, 계속 누르고 있으면 MOVE_REPEAT_INTERVAL마다 반복 이동.
     void UpdateMovementInput(float deltaTime);
 
+    void UpdateRotationInput();
+
     // 착지 처리: Block::Land() 호출 및 GridManager::MarkOccupied 통지
     void LockBlock(Block* block);
 
