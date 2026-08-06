@@ -20,6 +20,8 @@ public:
 
     int GetCellState(int subCellX, int subCellY) const;
     void SetCellOccupied(int subCellX, int subCellY);
+    // 블럭이 제거될 때(Toppling 이탈 등) 그 블럭이 점유하던 칸을 다시 빈 칸으로 되돌린다
+    void ClearCellOccupied(int subCellX, int subCellY);
 
 private:
     GridManager() = default;

@@ -3,7 +3,7 @@
 #include "../core/Scene.h"
 
 // 실제 게임 플레이가 진행되는 씬.
-// PhysicsManager/CollisionManager/BlockManager/GridManager/CameraManager/UIManager를 사용한다.
+// PhysicsManager/CollisionManager/BlockManager/CameraManager/UIManager를 사용한다.
 class PlayScene : public Scene
 {
 public:
@@ -23,4 +23,7 @@ private:
     HDC m_staticLayerDC = nullptr;
     HBITMAP m_staticLayerBitmap = nullptr;
     bool m_staticLayerDirty = true;
+
+    // F1로 토글하는 디버그 콜라이더(빨간 사각형) 표시 여부
+    bool m_showColliders = false;
 };

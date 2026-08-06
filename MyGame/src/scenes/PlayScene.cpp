@@ -5,15 +5,14 @@
 #include "../managers/RenderManager.h"
 #include "../managers/CameraManager.h"
 #include "../managers/BlockManager.h"
-#include "../managers/GridManager.h"
 #include "../objects/Block.h"
 #include "../util/Constants.h"
 #include "../util/Types.h"
 #include "../managers/PhysicsManager.h"
+#include "../core/InputManager.h"
 void PlayScene::Enter()
 {
     // TODO: 카메라 등 나머지 플레이 상태 초기화 직접 구현
-    GridManager::GetInstance().Init();
 
     ResourceManager::GetInstance().LoadSprite("assets/block1.png");
     ResourceManager::GetInstance().LoadSprite("assets/block2.png");
@@ -56,6 +55,11 @@ void PlayScene::Update(float deltaTime)
     BlockManager::GetInstance().UpdateMovementInput(deltaTime);
     BlockManager::GetInstance().UpdateRotationInput();
     PhysicsManager::GetInstance().Update(deltaTime);
+
+    if (InputManager::GetInstance().IsKeyPressed(VK_F1))
+    {
+        m_showColliders = !m_showColliders;
+    }
 }
 
 void PlayScene::RenderStaticLayer(HDC hdc)
@@ -66,7 +70,8 @@ void PlayScene::RenderStaticLayer(HDC hdc)
     float backgroundWidth = static_cast<float>(backgroundSprite.bitmap->GetWidth());
     Vector2 backgroundPosition = { 0.0f, Constants::WINDOW_HEIGHT - backgroundHeight };
     Vector2 backgroundScreenPos = CameraManager::GetInstance().WorldToScreen(backgroundPosition);
-    RenderManager::GetInstance().DrawSpriteRotated(hdc, backgroundSprite, backgroundScreenPos, { backgroundWidth,backgroundHeight }, 0.0f, 0);
+    Vector2 backgroundCenter = backgroundScreenPos + Vector2{ backgroundWidth / 2.0f, backgroundHeight / 2.0f };
+    RenderManager::GetInstance().DrawSpriteRotated(hdc, backgroundSprite, backgroundCenter, { backgroundWidth,backgroundHeight }, 0.0f, 0);
 
     for (int row = 0; row < Constants::FLOOR_HEIGHT_TILES; ++row)
     {
@@ -111,8 +116,9 @@ void PlayScene::RenderStaticLayer(HDC hdc)
             float floorLeftMargin = (Constants::GRID_WIDTH - Constants::FLOOR_WIDTH_TILES) / 2.0f * Constants::TILE_SIZE;
             Vector2 floorWorldPos = { floorLeftMargin + col * Constants::TILE_SIZE, Constants::WINDOW_HEIGHT - (Constants::FLOOR_HEIGHT_TILES - row) * Constants::TILE_SIZE };
             Vector2 floorScreenPos = CameraManager::GetInstance().WorldToScreen(floorWorldPos);
+            Vector2 floorCenter = floorScreenPos + Vector2{ Constants::TILE_SIZE / 2.0f, Constants::TILE_SIZE / 2.0f };
 
-            RenderManager::GetInstance().DrawSpriteRotated(hdc, floorSprite, floorScreenPos, { Constants::TILE_SIZE, Constants::TILE_SIZE }, 0.0f, 0);
+            RenderManager::GetInstance().DrawSpriteRotated(hdc, floorSprite, floorCenter, { Constants::TILE_SIZE, Constants::TILE_SIZE }, 0.0f, 0);
         }
     }
 }
@@ -142,8 +148,14 @@ void PlayScene::Render(HDC hdc)
         const SpriteInfo& blockSprite = ResourceManager::GetInstance().GetSpriteInfo(block->GetSpriteId());
         for (int cellIndex = 0; cellIndex < block->GetCellCount(); ++cellIndex)
         {
-            Vector2 cellScreenPos = CameraManager::GetInstance().WorldToScreen(block->GetCellRenderPosition(cellIndex));
-            RenderManager::GetInstance().DrawSpriteRotated(hdc, blockSprite, cellScreenPos, { Constants::TILE_SIZE, Constants::TILE_SIZE }, 0.0f, 0);
+            Vector2 cellScreenCenter = CameraManager::GetInstance().WorldToScreen(block->GetCellCenterRotated(cellIndex));
+            RenderManager::GetInstance().DrawSpriteRotated(hdc, blockSprite, cellScreenCenter, { Constants::TILE_SIZE, Constants::TILE_SIZE }, block->GetAngle(), 0);
         }
+    }
+
+    if (m_showColliders)
+    {
+        RenderManager::GetInstance().DrawBlockColliders(hdc);
+        RenderManager::GetInstance().DrawSupportDebug(hdc);
     }
 }

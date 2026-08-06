@@ -5,6 +5,10 @@
 #include "RenderManager.h"
 #include "../util/Constants.h"
 #include "../core/TimeManager.h"
+#include "../managers/BlockManager.h"
+#include "../managers/CameraManager.h"
+#include "../managers/PhysicsManager.h"
+#include "../objects/Block.h"
 
 RenderManager& RenderManager::GetInstance()
 {
@@ -12,10 +16,10 @@ RenderManager& RenderManager::GetInstance()
 	return instance;
 }
 
-void RenderManager::DrawSpriteRotated(HDC hdc, const SpriteInfo& sprite, Vector2 Position, Vector2 size, float angle, int frameIndex)
+void RenderManager::DrawSpriteRotated(HDC hdc, const SpriteInfo& sprite, Vector2 center, Vector2 size, float angle, int frameIndex)
 {
 	Gdiplus::Graphics graphics(hdc);
-	
+
 	//픽셀이 흐리게 보이는 것을 해결하기 위해 추가한 코드
 	graphics.SetInterpolationMode(Gdiplus::InterpolationMode::InterpolationModeNearestNeighbor);
 	graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
@@ -30,8 +34,9 @@ void RenderManager::DrawSpriteRotated(HDC hdc, const SpriteInfo& sprite, Vector2
 	float frameHeight = static_cast<float>(sprite.bitmap->GetHeight());
 	float srcX = 0.0f;
 
-
-	graphics.TranslateTransform(Position.x + size.x / 2.0f, Position.y + size.y / 2.0f);
+	// center를 회전 피벗으로 삼아 그 자리에서 회전시킨 뒤, 크기의 절반만큼 되돌아가 그린다
+	// (= 항상 center를 중심으로 하는 size x size 정사각형이 angle만큼 회전된 모습)
+	graphics.TranslateTransform(center.x, center.y);
 	graphics.RotateTransform(angle);
 	graphics.TranslateTransform(-size.x / 2.0f, -size.y / 2.0f);
 
@@ -79,4 +84,79 @@ void RenderManager::DrawFps(HDC hdc)
 	SetBkMode(hdc, TRANSPARENT);
 	SetTextColor(hdc, Constants::FPS_TEXT_COLOR);
 	TextOutA(hdc, Constants::FPS_TEXT_MARGIN, Constants::FPS_TEXT_MARGIN, fpsText.c_str(), static_cast<int>(fpsText.length()));
+}
+
+void RenderManager::DrawBlockColliders(HDC hdc)
+{
+	HPEN colliderPen = CreatePen(PS_SOLID, 1, Constants::COLLIDER_DEBUG_COLOR);
+	HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, colliderPen));
+	HBRUSH oldBrush = static_cast<HBRUSH>(SelectObject(hdc, GetStockObject(NULL_BRUSH)));
+
+	for (Block* block : BlockManager::GetInstance().GetAllBlocks())
+	{
+		for (int cellIndex = 0; cellIndex < block->GetCellCount(); ++cellIndex)
+		{
+			// GetCellRotatedCorners가 실제 충돌 판정(SAT)에 쓰는 바로 그 사각형이라, 이걸 그대로 그리면
+			// "진짜 콜라이더"가 어디에 있는지 보인다 (스프라이트 렌더링용 회전과는 별개 계산이라 어긋날 수 있음)
+			Vector2 corners[4];
+			block->GetCellRotatedCorners(cellIndex, corners);
+
+			POINT screenPoints[5];
+			for (int i = 0; i < 4; ++i)
+			{
+				Vector2 screenPos = CameraManager::GetInstance().WorldToScreen(corners[i]);
+				screenPoints[i] = { static_cast<LONG>(screenPos.x), static_cast<LONG>(screenPos.y) };
+			}
+			screenPoints[4] = screenPoints[0]; // 사각형을 닫기 위해 첫 점으로 되돌아감
+
+			Polyline(hdc, screenPoints, 5);
+		}
+	}
+
+	SelectObject(hdc, oldBrush);
+	SelectObject(hdc, oldPen);
+	DeleteObject(colliderPen);
+}
+
+void RenderManager::DrawSupportDebug(HDC hdc)
+{
+	for (Block* block : BlockManager::GetInstance().GetAllBlocks())
+	{
+		if (block->GetPhysicsState() == PhysicsState::Airborne)
+		{
+			continue;
+		}
+
+		float minX = 0.0f, maxX = 0.0f, combinedComX = 0.0f;
+		bool hasSupport = PhysicsManager::GetInstance().ComputeSupportDebugInfo(block, minX, maxX, combinedComX);
+		if (!hasSupport)
+		{
+			continue;
+		}
+
+		// ResolveBalance와 같은 IMBALANCE_DEADZONE 여유를 적용해서, 실제로 넘어지지 않을 미세한
+		// 오차까지 빨간색으로 표시해 헷갈리는 일이 없게 한다
+		bool balanced = combinedComX >= minX - Constants::IMBALANCE_DEADZONE && combinedComX <= maxX + Constants::IMBALANCE_DEADZONE;
+		COLORREF color = balanced ? RGB(0, 200, 80) : RGB(255, 0, 0);
+
+		HPEN pen = CreatePen(PS_SOLID, 3, color);
+		HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, pen));
+
+		// 블럭 위쪽 8px 지점에 지지 범위(가로선)를 그린다
+		AABB bounds = block->GetWorldBounds();
+		float lineY = bounds.min.y - 8.0f;
+
+		Vector2 minScreen = CameraManager::GetInstance().WorldToScreen({ minX, lineY });
+		Vector2 maxScreen = CameraManager::GetInstance().WorldToScreen({ maxX, lineY });
+		MoveToEx(hdc, static_cast<int>(minScreen.x), static_cast<int>(minScreen.y), nullptr);
+		LineTo(hdc, static_cast<int>(maxScreen.x), static_cast<int>(maxScreen.y));
+
+		// 결합 무게중심 위치에 세로 틱을 그린다
+		Vector2 comScreen = CameraManager::GetInstance().WorldToScreen({ combinedComX, lineY });
+		MoveToEx(hdc, static_cast<int>(comScreen.x), static_cast<int>(comScreen.y) - 7, nullptr);
+		LineTo(hdc, static_cast<int>(comScreen.x), static_cast<int>(comScreen.y) + 7);
+
+		SelectObject(hdc, oldPen);
+		DeleteObject(pen);
+	}
 }

@@ -23,6 +23,13 @@ struct Vector2
         y += other.y;
         return *this;
     }
+
+    Vector2& operator-=(const Vector2& other)
+    {
+        x -= other.x;
+        y -= other.y;
+        return *this;
+    }
 };
 
 // 사각형 충돌 판정에 쓰이는 AABB (Axis-Aligned Bounding Box)
@@ -37,7 +44,8 @@ enum class PhysicsState
 {
     Airborne,  // 공중 상태: 그리드(서브셀) 기반 낙하 중, 물리 미적용
     Awake,     // 바닥 상태: 착지 직후, 물리 시뮬레이션(흔들림) 활성
-    Sleeping   // 바닥 상태: 안정화되어 물리 계산 스킵
+    Sleeping,  // 바닥 상태: 안정화되어 물리 계산 스킵
+    Toppling   // 무게중심이 무너져서 회전+낙하하며 이탈 중. 충돌 없이 화면 밖으로 나가면 제거된다
 };
 
 // TODO: 어떤 블럭 종류를 스폰할지 구분하는 용도.

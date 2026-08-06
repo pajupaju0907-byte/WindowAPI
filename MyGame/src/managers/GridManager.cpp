@@ -51,3 +51,14 @@ void GridManager::SetCellOccupied(int subCellX, int subCellY)
     m_cells[subCellY][subCellX] = 1;
 }
 
+void GridManager::ClearCellOccupied(int subCellX, int subCellY)
+{
+    if (subCellX < 0 || subCellX >= Constants::GRID_WIDTH_SUBCELLS ||
+        subCellY < 0 || subCellY >= Constants::GRID_HEIGHT_SUBCELLS)
+    {
+        return;
+    }
+
+    m_cells[subCellY][subCellX] = 0;
+}
+
