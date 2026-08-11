@@ -40,10 +40,10 @@ void SceneManager::Update(float deltaTime)
     }
 }
 
-void SceneManager::Render(HDC hdc)
+void SceneManager::Render(ID2D1RenderTarget* renderTarget)
 {
     if (m_currentScene)
     {
-        m_currentScene->Render(hdc);
+        m_currentScene->Render(renderTarget);
     }
 }

@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <d2d1.h>
+
 // 모든 씬(타이틀/플레이/게임오버)이 공통으로 구현해야 하는 인터페이스
 class Scene
 {
@@ -16,6 +18,6 @@ public:
     virtual void Update(float deltaTime) = 0;
 
     // 매 프레임 호출되는 렌더링 로직
-    // hdc는 WM_PAINT에서 얻은 디바이스 컨텍스트를 그대로 받아 RenderManager에 전달하기 위함
-    virtual void Render(HDC hdc) = 0;
+    // renderTarget은 WM_PAINT에서 얻은 Direct2D 렌더타겟을 그대로 받아 RenderManager에 전달하기 위함
+    virtual void Render(ID2D1RenderTarget* renderTarget) = 0;
 };

@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <memory>
+#include <d2d1.h>
 
 class Scene;
 
@@ -21,7 +22,7 @@ public:
     void ChangeScene(SceneType type);
 
     void Update(float deltaTime);
-    void Render(HDC hdc);
+    void Render(ID2D1RenderTarget* renderTarget);
 
 private:
     SceneManager() = default;

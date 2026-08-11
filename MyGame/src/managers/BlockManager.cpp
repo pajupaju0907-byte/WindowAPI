@@ -1,5 +1,8 @@
 ﻿#include "pch.h"
 
+#include <cmath>
+#include <cstdlib>
+
 #include "BlockManager.h"
 #include "../objects/Block.h"
 #include "../objects/TetrominoBlock.h"
@@ -7,8 +10,7 @@
 #include "../objects/HeavyBlock.h"
 #include "../util/Constants.h"
 #include "../core/InputManager.h"
-#include <cstdlib>
-#include "PhysicsManager.h"
+#include "CameraManager.h"
 BlockManager& BlockManager::GetInstance()
 {
     static BlockManager instance;
@@ -36,8 +38,13 @@ void BlockManager::SpawnBlock(BlockType type)
         break;
     }
 
-    // 그리드 가로 중앙, 맨 위 줄에서 스폰 시작
-    spawnedBlock->SetGridPosition(Constants::GRID_WIDTH_SUBCELLS / 2, 0);
+    // 그리드 가로 중앙에서 스폰. 세로는 고정된 0번 줄이 아니라 카메라가 보고 있는 화면 맨 위 지점
+    // (world y = 카메라 위치)에 맞춰 스폰한다 — 카메라가 위로 올라간 만큼 스폰 위치도 같이 올라가서,
+    // 항상 화면 맨 위에서 블럭이 등장하는 것처럼 보이게 한다. 카메라가 안 움직인 초반엔 위치가 0이라
+    // 기존과 동일하게 맨 위 줄에서 스폰된다.
+    float cameraTopWorldY = CameraManager::GetInstance().GetPosition().y;
+    int spawnGridY = static_cast<int>(std::round(cameraTopWorldY / Constants::SUBCELL_SIZE));
+    spawnedBlock->SetGridPosition(Constants::GRID_WIDTH_SUBCELLS / 2, spawnGridY);
 
     m_currentFallingBlock = spawnedBlock.get();
     m_blocks.push_back(std::move(spawnedBlock));
@@ -133,7 +140,79 @@ void BlockManager::LockBlock(Block* block)
     if (block == nullptr) return;
 
     block->Land();
-    PhysicsManager::GetInstance().WakeAll();
+}
+
+bool BlockManager::IsGameOver() const
+{
+    return m_isGameOver;
+}
+
+float BlockManager::GetDeathZoneTopY() const
+{
+    // WorldToScreen이 worldPos - cameraPosition이므로, "지금 화면 맨 아래(스크린 y = WINDOW_HEIGHT)"에
+    // 해당하는 월드 y는 그 역산인 cameraPosition + WINDOW_HEIGHT다. 카메라가 위로 올라갈수록(음수로
+    // 커질수록) 이 값도 같이 작아져서, 데스존이 항상 지금 보이는 화면 바닥에 붙어 따라 올라간다.
+    return CameraManager::GetInstance().GetPosition().y + Constants::WINDOW_HEIGHT + Constants::DEATH_ZONE_MARGIN_BELOW_SCREEN;
+}
+
+float BlockManager::GetTallestHeightMeters() const
+{
+    bool hasStackedBlock = false;
+	float highestBlockY = 0.0f;
+
+	for (Block* block : GetAllBlocks())
+	{
+		if (block->GetPhysicsState() == PhysicsState::Airborne)
+		{
+			continue;
+		}
+		float blockY = block->GetRenderPosition().y;
+		if (!hasStackedBlock || blockY < highestBlockY)
+		{
+			highestBlockY = blockY;
+			hasStackedBlock = true;
+		}
+	}
+	if (!hasStackedBlock)
+	{
+		return 0.0f;
+	}
+	float heightInPixels = Constants::FLOOR_TOP_Y - highestBlockY;
+	float heightInTiles = heightInPixels / Constants::TILE_SIZE;
+    return heightInTiles * Constants::METERS_PER_TILE;
+}
+
+bool BlockManager::IsPointInDeathZone(Vector2 worldPoint) const
+{
+    bool isBelowDeathZoneTop = worldPoint.y >= GetDeathZoneTopY();
+    bool isOutsideFloorWidth = worldPoint.x < Constants::FLOOR_LEFT_X || worldPoint.x > Constants::FLOOR_RIGHT_X;
+    return isBelowDeathZoneTop && isOutsideFloorWidth;
+}
+
+void BlockManager::CheckDeathZone()
+{
+    if (m_isGameOver)
+    {
+        return;
+    }
+
+    for (Block* block : GetAllBlocks())
+    {
+        for (int i = 0; i < block->GetCellCount(); ++i)
+        {
+            Vector2 corners[4];
+            block->GetCellRotatedCorners(i, corners);
+
+            for (int c = 0; c < 4; ++c)
+            {
+                if (IsPointInDeathZone(corners[c]))
+                {
+                    m_isGameOver = true;
+                    return;
+                }
+            }
+        }
+    }
 }
 
 void BlockManager::RemoveBlock(Block* block)

@@ -18,7 +18,7 @@ void GameOverScene::Update(float deltaTime)
     (void)deltaTime;
 }
 
-void GameOverScene::Render(HDC hdc)
+void GameOverScene::Render(ID2D1RenderTarget* renderTarget)
 {
     // TODO: 게임오버 씬 렌더링 로직 직접 구현
 }

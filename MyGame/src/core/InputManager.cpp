@@ -1,6 +1,7 @@
 ﻿#include "pch.h"
 
 #include "InputManager.h"
+#include "WindowManager.h"
 
 InputManager& InputManager::GetInstance()
 {
@@ -15,6 +16,18 @@ void InputManager::Update()
         m_previousKeys[key] = m_currentKeys[key];
         m_currentKeys[key] = (GetAsyncKeyState(key) & 0x8000) != 0;
     }
+
+    // 마우스 커서는 화면 좌표로 나오므로, 창 클라이언트 영역 기준 좌표로 바꿔서 저장해둔다
+    // (렌더링에 쓰는 좌표계와 동일하게 맞춰야 버튼 히트 테스트에 그대로 쓸 수 있다)
+    POINT cursorPos{};
+    GetCursorPos(&cursorPos);
+    ScreenToClient(WindowManager::GetInstance().GetWindowHandle(), &cursorPos);
+    m_mousePosition = { static_cast<float>(cursorPos.x), static_cast<float>(cursorPos.y) };
+}
+
+Vector2 InputManager::GetMousePosition() const
+{
+    return m_mousePosition;
 }
 
 bool InputManager::IsKeyDown(int key) const

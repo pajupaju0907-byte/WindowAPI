@@ -24,6 +24,12 @@ public:
 	// 기반 마찰은 "충돌 순간"에만 계산되고 얹혀서 미끄러지는 중(수직 속도 거의 0)엔 아예 안 걸리는
 	// 구조적 한계가 있어서, 지지대가 있는 동안 매 프레임 속도를 깎아 마찰을 흉내낸다
 	void DampVelocity(float dampingFactor);
+
+	// [바닥 마찰 근사] 위 DampVelocity의 각속도 버전. 평평한 바닥에 얹힌 블록은 중력->충돌 임펄스가
+	// 매 스텝 반복되면서 아주 미세한 회전이 감쇠 없이 계속 남을 수 있는데(선속도와 달리 각속도를
+	// 직접 깎는 곳이 없었다), 이게 SLEEP_ANGULAR_THRESHOLD를 살짝살짝 넘나들며 영원히 Sleep에 못
+	// 들어가는 원인이었다. 지지대가 있는 동안 매 프레임 각속도도 같이 깎아 회전 마찰을 흉내낸다.
+	void DampAngularVelocity(float dampingFactor);
 	// originGridX/Y(서브셀 좌표)에 이 블럭이 들어갈 수 있는지 검사한다. 그리드 스냅샷이 아니라
 	// 그 순간 실제로 존재하는 착지된 블럭들의 위치(BlockManager)와 바닥 범위(Constants)를 직접 본다 —
 	// 그래야 물리로 움직인 블럭 위치와 절대 어긋나지 않는다
@@ -41,6 +47,12 @@ public:
 	// 낙하 속도(FALL_STEP_INTERVAL)와 무관하게 즉시 다 떨어져버리기 때문에 이동 없는 버전이 따로 필요하다.
 	bool CanStepDown() const;
 
+	// [그리드-연속 경계] CanStepDown()이 false가 되어 락이 걸린 시점엔, 다음 서브셀로는 못 가지만
+	// 그 사이(0 ~ SUBCELL_SIZE px 미만)에 실제 장애물까지 남은 여유가 있을 수 있다. 그 여유를 계산해서
+	// Land()가 그리드 칸에 딱 맞춰 배치하는 대신 실제 접촉 위치 가까이에 배치할 수 있게 해준다.
+	// 그리드 낙하는 항상 회전 없는(axis-aligned) 상태라 셀별 바닥 Y 비교만으로 정확히 계산 가능하다.
+	float ComputeContinuousDropOffset() const;
+
 	//부호로 방향을 받아 모양을 90도 회전시키되, 회전한 모양이 안 들어가면 취소한다
 	void Rotate(int direction);
 	// 바닥 상태 전용: 착지 이후의 물리 연산(흔들림 등). Awake 상태에서만 호출되어야 한다.
@@ -51,8 +63,11 @@ public:
 
 	// [강제 취침 타임아웃] Awake/Toppling 상태로 얼마나 오래 있었는지 잰다. 지지대가 있는데도
 	// 미세한 진동 때문에 속도가 임계값 밑으로 안 떨어져서 영원히 안 잠드는 경우의 안전장치로 쓴다.
-	// Sleep() 호출 시 0으로 리셋된다.
+	//Land()와 BeginToppling()에서만 리셋되고, Sleep()/WakeUp()에서는 리셋되지 않는다
 	void AdvanceActiveTimer(float deltaTime);
+	void AdvanceRestTimer(float deltaTime);
+	void ResetRestTimer();
+	float GetRestTimer() const;
 	float GetActiveTimer() const;
 
 	// Airborne -> Awake 전환. 착지 시 BlockManager가 호출해 그리드 좌표를 월드 좌표(m_position)로
@@ -138,6 +153,11 @@ public:
 	// 무한 회전 걱정 없이 ApplyBalanceTorque를 마음 놓고 쓸 수 있다
 	void BeginToppling();
 
+	// [넘어짐 피벗 고정] pivotWorld(월드 좌표)를 축으로 삼아, TOPPLE_PIVOT_LOCK_DURATION 동안 그 지점이
+	// 화면에서 안 움직이도록 위치를 고정한 채 회전만 시킨다 — 무게중심 축 회전 때문에 접촉 모서리가
+	// 허공으로 붕 뜨는 걸 막는 용도. BeginToppling() 직후에 호출해서 쓴다.
+	void SetTopplePivot(Vector2 pivotWorld);
+
 protected:
 	// unique_ptr<Collider>가 불완전 타입을 가리키므로, 기본 생성자는 반드시 .cpp(Collider가 완전한 타입인 곳)에서 정의한다.
 	Block();
@@ -162,6 +182,26 @@ protected:
 	float m_angularVelocity = 0.0f;
 	float m_mass = 1.0f;
 	float m_activeTimer = 0.0f;
+
+	// [성능] RotateLocalPointToWorld가 매 호출마다 sin/cos를 다시 계산하지 않도록 캐싱한다.
+	// 물리 루프(지지 판정/충돌)에서 같은 블럭에 대해 한 프레임에도 수십~수백 번 불릴 수 있고,
+	// 특히 Sleeping 블럭은 m_angle이 그대로라 매번 재계산하는 게 완전히 낭비였다.
+	// const 메서드 안에서 갱신해야 해서 mutable로 둔다.
+	mutable float m_cachedTrigAngle = 0.0f;
+	mutable float m_cachedCosAngle = 1.0f;
+	mutable float m_cachedSinAngle = 0.0f;
+	mutable bool m_trigCacheValid = false;
+
+	// [넘어짐 피벗 고정] SetTopplePivot()이 설정하는 상태. m_pivotLockTimeRemaining이 0보다 큰 동안,
+	// Integrate()가 위치를 그냥 적분하는 대신 m_pivotWorldTarget이 고정되도록 역산해서 덮어쓴다.
+	Vector2 m_pivotWorldTarget = { 0.0f, 0.0f };
+	Vector2 m_pivotOffsetAtCapture = { 0.0f, 0.0f };
+	float m_pivotCaptureAngle = 0.0f;
+	float m_pivotLockTimeRemaining = 0.0f;
+	// [블록별 rest timer] 지지대가 있고 속도가 SLEEP 임계값 밑인 상태가 얼마나 지속됐는지 잰다.
+	// m_activeTimer(강제취침 안전장치)와 달리 이건 "진짜로 Sleep해도 되는가"를 판단하는 정상 경로다.
+	// 조건이 깨지면(지지 소실/충돌/속도 초과) 즉시 0으로 리셋된다.
+	float m_restTimer = 0.0f;
 	// [그리드 스냅] 한 번이라도 Toppling을 거쳤으면 true. 정상 착지해서 흔들리다 멈춘 블럭은 진짜
 	// 테트리스처럼 격자에 딱 맞게 스냅시키고 싶지만, 넘어진 블럭까지 스냅하면 물리로 자연스럽게 기운
 	// 각도가 강제로 90도 단위로 꺾여버려 어색해진다 — 그래서 Toppling을 거친 적 있는지 구분해서 쓴다

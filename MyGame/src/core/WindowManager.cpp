@@ -26,15 +26,33 @@ namespace
 		{
 			// 창을 다시 그려야 할 때(예: 다른 창에 가려졌다가 돌아옴) 윈도우가 이 메시지를 보냄
 			PAINTSTRUCT ps;
-			HDC hdc = BeginPaint(hWnd, &ps);
+			BeginPaint(hWnd, &ps);
 
-			// 화면 DC에 직접 그리면 깜빡이므로, 오프스크린 백버퍼에 전부 그린 뒤 한 번에 복사한다
-			HDC backBufferDC = WindowManager::GetInstance().GetBackBufferDC();
-			RenderManager::GetInstance().Render(backBufferDC);
-			SceneManager::GetInstance().Render(backBufferDC);
+			// Direct2D는 GDI처럼 별도 백버퍼를 손으로 관리할 필요가 없다 — HwndRenderTarget이
+			// BeginDraw()~EndDraw() 사이에 그린 내용을 내부적으로 처리하고 EndDraw()에서 화면에 반영한다.
+			// [방어] 렌더타겟이 아직(또는 재생성 실패로) 없으면 null 포인터 호출로 콜백 안에서 죽는 대신 이번 프레임만 건너뛴다
+			ID2D1HwndRenderTarget* renderTarget = WindowManager::GetInstance().GetRenderTarget();
+			if (renderTarget == nullptr)
+			{
+				EndPaint(hWnd, &ps);
+				return 0;
+			}
+
+			renderTarget->BeginDraw();
+			renderTarget->Clear(D2D1::ColorF(D2D1::ColorF::White));
+
+			RenderManager::GetInstance().Render(renderTarget);
+			SceneManager::GetInstance().Render(renderTarget);
 			// FPS 표시는 다른 내용에 덮이지 않도록 맨 마지막에 그린다
-			RenderManager::GetInstance().DrawFps(backBufferDC);
-			BitBlt(hdc, 0, 0, Constants::WINDOW_WIDTH, Constants::WINDOW_HEIGHT, backBufferDC, 0, 0, SRCCOPY);
+			RenderManager::GetInstance().DrawFps(renderTarget);
+
+			HRESULT hr = renderTarget->EndDraw();
+			if (hr == D2DERR_RECREATE_TARGET)
+			{
+				// 디바이스 유실(그래픽 드라이버 리셋 등) — 렌더타겟만 다시 만든다. 이미 로드된 스프라이트
+				// 비트맵은 옛 렌더타겟에 종속돼 있어 같이 무효화되지만, 흔치 않은 상황이라 재로딩까지는 다루지 않는다.
+				WindowManager::GetInstance().RecreateRenderTarget();
+			}
 
 			EndPaint(hWnd, &ps);
 			return 0;
@@ -84,17 +102,64 @@ bool WindowManager::Init(HINSTANCE hInstance, int nCmdShow)
 		return false;
 	}
 
+	// [중요] Direct2D/DirectWrite/WIC 리소스를 전부 준비하기 전에는 창을 보여주면 안 된다.
+	// ShowWindow/UpdateWindow가 창을 보여주는 순간 WM_PAINT가 그 자리에서 바로 호출될 수 있는데,
+	// 그때 렌더타겟이 아직 null이면 WndProc 안에서 그 null 포인터로 BeginDraw()를 호출하다가
+	// 콜백 안에서 처리 안 된 예외로 즉시 크래시가 난다(GDI 핸들과 달리 COM 포인터는 null이면 호출 자체가 죽는다).
+	if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, m_d2dFactory.GetAddressOf())))
+	{
+		return false;
+	}
+
+	if (!CreateRenderTarget())
+	{
+		return false;
+	}
+
+	// 텍스트(FPS/물리 디버그) 그리기용 DirectWrite 팩토리. 렌더타겟과 달리 디바이스에 종속되지 않아 한 번만 만든다
+	if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+		reinterpret_cast<IUnknown**>(m_writeFactory.GetAddressOf()))))
+	{
+		return false;
+	}
+
+	// 스프라이트 PNG 디코딩용 WIC 팩토리. 사용하려면 호출 스레드에 COM이 초기화돼 있어야 한다(MyGame.cpp에서 처리)
+	if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+		IID_PPV_ARGS(m_wicFactory.GetAddressOf()))))
+	{
+		return false;
+	}
+
 	ShowWindow(m_hWnd, nCmdShow);
 	UpdateWindow(m_hWnd);
 
-	// 더블 버퍼링용 백버퍼를 창 크기에 맞춰 한 번만 생성해두고 매 프레임 재사용한다
-	HDC windowDC = GetDC(m_hWnd);
-	m_backBufferDC = CreateCompatibleDC(windowDC);
-	m_backBufferBitmap = CreateCompatibleBitmap(windowDC, Constants::WINDOW_WIDTH, Constants::WINDOW_HEIGHT);
-	SelectObject(m_backBufferDC, m_backBufferBitmap);
-	ReleaseDC(m_hWnd, windowDC);
-
 	return true;
+}
+
+bool WindowManager::CreateRenderTarget()
+{
+	m_renderTarget.Reset();
+
+	RECT clientRect{};
+	GetClientRect(m_hWnd, &clientRect);
+	D2D1_SIZE_U size = D2D1::SizeU(
+		static_cast<UINT32>(clientRect.right - clientRect.left),
+		static_cast<UINT32>(clientRect.bottom - clientRect.top));
+
+	// [중요] 기본값(D2D1_PRESENT_OPTIONS_NONE)은 EndDraw()가 모니터 수직동기화(vsync)를 기다렸다가 화면에
+	// 낸다 — 이러면 TARGET_FPS를 아무리 올려도 모니터 주사율(보통 60Hz)을 못 넘는다. IMMEDIATELY를 주면
+	// vsync를 안 기다리고 그리는 즉시 내보내서, MessageLoop의 Sleep 기반 프레임 제한이 실제로 상한이 된다.
+	HRESULT hr = m_d2dFactory->CreateHwndRenderTarget(
+		D2D1::RenderTargetProperties(),
+		D2D1::HwndRenderTargetProperties(m_hWnd, size, D2D1_PRESENT_OPTIONS_IMMEDIATELY),
+		m_renderTarget.GetAddressOf());
+
+	return SUCCEEDED(hr);
+}
+
+void WindowManager::RecreateRenderTarget()
+{
+	CreateRenderTarget();
 }
 
 int WindowManager::MessageLoop()
@@ -143,7 +208,17 @@ HWND WindowManager::GetWindowHandle() const
 	return m_hWnd;
 }
 
-HDC WindowManager::GetBackBufferDC() const
+ID2D1HwndRenderTarget* WindowManager::GetRenderTarget() const
 {
-	return m_backBufferDC;
+	return m_renderTarget.Get();
+}
+
+IDWriteFactory* WindowManager::GetWriteFactory() const
+{
+	return m_writeFactory.Get();
+}
+
+IWICImagingFactory* WindowManager::GetWicFactory() const
+{
+	return m_wicFactory.Get();
 }

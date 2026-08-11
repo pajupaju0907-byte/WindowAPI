@@ -9,5 +9,5 @@ public:
     void Enter() override;
     void Exit() override;
     void Update(float deltaTime) override;
-    void Render(HDC hdc) override;
+    void Render(ID2D1RenderTarget* renderTarget) override;
 };

@@ -17,6 +17,9 @@ public:
     void Update(float deltaTime);
     Vector2 WorldToScreen(Vector2 worldPos) const;
 
+    // 현재 카메라 위치. 정적 배경 캐시를 언제 다시 그려야 하는지 판단하는 용도 등으로 씀
+    Vector2 GetPosition() const;
+
 private:
     CameraManager() = default;
     ~CameraManager() = default;

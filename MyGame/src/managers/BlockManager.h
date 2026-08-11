@@ -39,7 +39,23 @@ public:
     // 착지한 블럭까지 포함해 지금까지 스폰된 모든 블럭 조회 (렌더링 등에서 전체 순회용)
     std::vector<Block*> GetAllBlocks() const;
 
+    // [데스 판정] 블럭이 데스존(CheckDeathZone)에 닿았으면 true. 한 번 true가 되면 이 씬이 끝날 때까지 유지된다.
+    bool IsGameOver() const;
+
+    // [데스 판정] 매 프레임 호출: 지금 존재하는 모든 블럭의 모든 칸을 훑어서, 하나라도 데스존
+    // (Constants::FLOOR_LEFT_X/FLOOR_RIGHT_X 바깥, GetDeathZoneTopY() 아래 — 밟을 땅이 없는 영역)에
+    // 닿아있으면 즉시 게임오버 상태로 만든다.
+    void CheckDeathZone();
+
+    // [데스 판정] 데스존이 시작되는 월드 Y좌표. 카메라가 올라간 만큼 같이 올라가서 항상 "지금 보이는
+    // 화면의 바닥"에 붙어있다 — PlayScene의 시각화(RenderDeathZones)도 이 값을 그대로 써서 어긋나지 않게 한다.
+    float GetDeathZoneTopY() const;
+    // 지금 쌓여있는 블럭 중 가장 높은 지점의 높이를 m 단위로 계산
+    float GetTallestHeightMeters() const;
 private:
+    // worldPoint가 데스존 안에 있는지 판정
+    bool IsPointInDeathZone(Vector2 worldPoint) const;
+
     BlockManager() = default;
     ~BlockManager();
     BlockManager(const BlockManager&) = delete;
@@ -59,4 +75,7 @@ private:
 
     // 좌우 이동키를 누르고 있을 때, 다음 반복 이동까지 남은 시간
     float m_moveTimer = 0.0f;
+
+    // [데스 판정] IsGameOver() 참고
+    bool m_isGameOver = false;
 };

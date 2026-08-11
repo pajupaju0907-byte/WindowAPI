@@ -7,6 +7,19 @@
 #include "../util/Constants.h"
 #include "../util/MathUtil.h"
 #include <cmath>
+#include <cstdio>
+
+namespace
+{
+	// [관찰 가능성] 물리 상태 전이를 Visual Studio 출력 창에 남긴다. Sleep<->Wake가 얼마나 자주
+	// 반복되는지, 어느 지점(WakeUp/Sleep/Land/BeginToppling)에서 전이가 일어났는지 코드 안 보고 바로 확인용.
+	void LogStateChange(const void* block, const char* reason)
+	{
+		char text[96];
+		std::snprintf(text, sizeof(text), "[Physics] Block %p: %s\n", block, reason);
+		OutputDebugStringA(text);
+	}
+}
 
 Block::Block() = default;
 Block::~Block() = default;
@@ -18,9 +31,12 @@ bool Block::CanOccupy(int originGridX, int originGridY) const
 		int cellSubCellX = originGridX + static_cast<int>(m_cellShape[i].x) * Constants::GRID_SUBCELL_SCALE;
 		int cellSubCellY = originGridY + static_cast<int>(m_cellShape[i].y) * Constants::GRID_SUBCELL_SCALE;
 
-		// 그리드 범위 밖으로는 못 나간다
+		// 가로 범위와 바닥 쪽 하한선(GRID_HEIGHT_SUBCELLS)은 그대로 막되, 위쪽(y가 작아지는 방향)은
+		// 일부러 제한을 두지 않는다 — 카메라가 계속 따라 올라가며 탑이 원래 창 높이 위로도 끝없이 쌓일 수
+		// 있어야 하기 때문. GridManager는 이 판정에 관여하지 않아서(다른 블럭과의 실제 좌표 SAT 비교로
+		// 충돌을 막기 때문에) 이 한 줄만 풀어도 안전하다.
 		if (cellSubCellX < 0 || cellSubCellX + Constants::GRID_SUBCELL_SCALE > Constants::GRID_WIDTH_SUBCELLS ||
-			cellSubCellY < 0 || cellSubCellY + Constants::GRID_SUBCELL_SCALE > Constants::GRID_HEIGHT_SUBCELLS)
+			cellSubCellY + Constants::GRID_SUBCELL_SCALE > Constants::GRID_HEIGHT_SUBCELLS)
 		{
 			return false;
 		}
@@ -103,6 +119,64 @@ bool Block::CanStepDown() const
 	return CanOccupy(m_gridX, nextGridY);
 }
 
+float Block::ComputeContinuousDropOffset() const
+{
+	Vector2 gridPixelPos = { m_gridX * Constants::SUBCELL_SIZE, m_gridY * Constants::SUBCELL_SIZE };
+
+	// 다음 서브셀로는 못 간다는 것만 확정됐을 뿐이라, 최대로 내려갈 수 있는 한도는 일단 한 서브셀
+	// 미만으로 잡아둔다 — 그 이상 여유가 있었다면애초에 CanStepDown()이 true였을 것이다.
+	float maxDrop = Constants::SUBCELL_SIZE;
+
+	for (int i = 0; i < CELL_COUNT; ++i)
+	{
+		Vector2 cellMin = gridPixelPos + m_cellShape[i] * Constants::TILE_SIZE;
+		Vector2 cellMax = cellMin + Vector2{ Constants::TILE_SIZE, Constants::TILE_SIZE };
+
+		// 바닥(발판)까지 남은 세로 여유
+		bool overlapsFloorX = cellMax.x > Constants::FLOOR_LEFT_X && cellMin.x < Constants::FLOOR_RIGHT_X;
+		if (overlapsFloorX)
+		{
+			float distanceToFloor = Constants::FLOOR_TOP_Y - cellMax.y;
+			if (distanceToFloor < maxDrop) maxDrop = distanceToFloor;
+		}
+
+		// 이미 착지한 다른 블럭까지 남은 세로 여유. 회전된(GetCellRotatedCorners) 좌표를 써서, 넘어져서
+		// 기운 블럭 위에 떨어지는 경우도 실제 기운 모양을 기준으로 정확히 계산한다
+		for (Block* other : BlockManager::GetInstance().GetAllBlocks())
+		{
+			if (other == this || other->GetPhysicsState() == PhysicsState::Airborne)
+			{
+				continue;
+			}
+
+			for (int j = 0; j < other->GetCellCount(); ++j)
+			{
+				Vector2 otherCorners[4];
+				other->GetCellRotatedCorners(j, otherCorners);
+
+				float otherMinX = otherCorners[0].x, otherMaxX = otherCorners[0].x, otherTopY = otherCorners[0].y;
+				for (int c = 1; c < 4; ++c)
+				{
+					if (otherCorners[c].x < otherMinX) otherMinX = otherCorners[c].x;
+					if (otherCorners[c].x > otherMaxX) otherMaxX = otherCorners[c].x;
+					if (otherCorners[c].y < otherTopY) otherTopY = otherCorners[c].y;
+				}
+
+				bool overlapsX = cellMax.x > otherMinX && cellMin.x < otherMaxX;
+				if (overlapsX)
+				{
+					float distanceToOther = otherTopY - cellMax.y;
+					if (distanceToOther < maxDrop) maxDrop = distanceToOther;
+				}
+			}
+		}
+	}
+
+	// 이론상 항상 >= 0이어야 하지만(현재 위치는 이미 안 겹치는 상태), 부동소수점 오차 방지용 clamp
+	if (maxDrop < 0.0f) maxDrop = 0.0f;
+	return maxDrop;
+}
+
 void Block::Rotate(int direction)
 {
 	if (!m_canRotate) return;
@@ -144,11 +218,45 @@ void Block::Integrate(float deltaTime)
 {
 	Vector2 acceleration = m_accumulatedForce * (1.0f / m_mass);
 	m_velocity += acceleration * deltaTime;
-	m_position += m_velocity * deltaTime;
 
 	m_angle += m_angularVelocity * deltaTime;
 
+	if (m_pivotLockTimeRemaining > 0.0f)
+	{
+		// [넘어짐 피벗 고정] 위치를 그냥 적분하는 대신, 캡처 시점 이후 회전한 만큼(deltaAngle)만큼
+		// m_pivotOffsetAtCapture(무게중심->피벗 오프셋)를 같이 돌려서, 그 결과가 여전히
+		// m_pivotWorldTarget을 가리키도록 무게중심 위치를 역산한다. RotateLocalPointToWorld와
+		// 같은 회전 공식이지만, 로컬 셀 좌표가 아니라 이미 월드 단위인 오프셋 벡터에 바로 적용한다.
+		float deltaAngle = m_angle - m_pivotCaptureAngle;
+		float radians = MathUtil::DegreesToRadians(deltaAngle);
+		float cosAngle = static_cast<float>(std::cos(radians));
+		float sinAngle = static_cast<float>(std::sin(radians));
+		Vector2 rotatedOffset
+		{
+			m_pivotOffsetAtCapture.x * cosAngle - m_pivotOffsetAtCapture.y * sinAngle,
+			m_pivotOffsetAtCapture.x * sinAngle + m_pivotOffsetAtCapture.y * cosAngle
+		};
+
+		Vector2 centerOfMassWorldTarget = m_pivotWorldTarget - rotatedOffset;
+		m_position = centerOfMassWorldTarget - GetCenterOfMassLocal() * Constants::TILE_SIZE;
+
+		m_pivotLockTimeRemaining -= deltaTime;
+	}
+	else
+	{
+		m_position += m_velocity * deltaTime;
+	}
+
 	m_accumulatedForce = { 0.0f, 0.0f };
+}
+
+void Block::SetTopplePivot(Vector2 pivotWorld)
+{
+	Vector2 centerOfMassWorld = GetRenderPosition() + GetCenterOfMassLocal() * Constants::TILE_SIZE;
+	m_pivotWorldTarget = pivotWorld;
+	m_pivotOffsetAtCapture = pivotWorld - centerOfMassWorld;
+	m_pivotCaptureAngle = m_angle;
+	m_pivotLockTimeRemaining = Constants::TOPPLE_PIVOT_LOCK_DURATION;
 }
 void Block::SetGridPosition(int gridX, int gridY)
 {
@@ -187,14 +295,20 @@ Vector2 Block::RotateLocalPointToWorld(Vector2 localPoint) const
 	Vector2 centerOfMassLocal = GetCenterOfMassLocal();
 	Vector2 offset = (localPoint - centerOfMassLocal) * Constants::TILE_SIZE;
 
-	float radians = MathUtil::DegreesToRadians(m_angle);
-	float cosAngle = static_cast<float>(std::cos(radians));
-	float sinAngle = static_cast<float>(std::sin(radians));
+	// [성능] m_angle이 지난 호출 때와 같으면 sin/cos를 다시 계산하지 않고 캐시를 재사용한다
+	if (!m_trigCacheValid || m_cachedTrigAngle != m_angle)
+	{
+		float radians = MathUtil::DegreesToRadians(m_angle);
+		m_cachedCosAngle = static_cast<float>(std::cos(radians));
+		m_cachedSinAngle = static_cast<float>(std::sin(radians));
+		m_cachedTrigAngle = m_angle;
+		m_trigCacheValid = true;
+	}
 
 	Vector2 rotatedOffset
 	{
-		offset.x * cosAngle - offset.y * sinAngle,
-		offset.x * sinAngle + offset.y * cosAngle
+		offset.x * m_cachedCosAngle - offset.y * m_cachedSinAngle,
+		offset.x * m_cachedSinAngle + offset.y * m_cachedCosAngle
 	};
 
 	Vector2 centerOfMassWorld = GetRenderPosition() + centerOfMassLocal * Constants::TILE_SIZE;
@@ -319,7 +433,17 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 	//    오히려 계속 미세하게 떨리기 때문에, 여러 프레임(솔버 반복)에 걸쳐 서서히 빠져나오게 하는 것
 	float correctedPenetration = penetration - Constants::POSITION_CORRECTION_SLOP;
 	if (correctedPenetration < 0.0f) correctedPenetration = 0.0f;
-	m_position += normal * (correctedPenetration * Constants::POSITION_CORRECTION_PERCENT);
+
+	// [순간이동 방지] 착지 판정 경계선의 미세한 오차 등으로 아주 드물게 비정상적으로 깊은 파고듦이
+	// 생겼을 때도, 한 프레임에 전부 밀어내면 순간이동처럼 보인다 — 한 프레임당 최대 이동 거리를
+	// 제한해서 나머지는 다음 프레임들에 걸쳐 서서히 빠져나오게 한다.
+	float moveDistance = correctedPenetration * Constants::POSITION_CORRECTION_PERCENT;
+	if (moveDistance > Constants::MAX_POSITION_CORRECTION_PER_STEP)
+	{
+		moveDistance = Constants::MAX_POSITION_CORRECTION_PER_STEP;
+	}
+
+	m_position += normal * moveDistance;
 
 	// 2) 충돌 지점의 실제 속도 = 무게중심 속도 + 회전 때문에 생기는 접선 속도.
 	//    회전하는 물체 위의 한 점은 무게중심과 속도가 다르다 (팽이 끝이 중심보다 훨씬 빠르게 도는 것과 같은 이유).
@@ -389,9 +513,16 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 	if (correctedPenetration < 0.0f) correctedPenetration = 0.0f;
 	correctedPenetration *= Constants::POSITION_CORRECTION_PERCENT;
 
+	// [순간이동 방지] ResolveRigidCollision과 같은 이유로, 한 프레임에 밀어낼 수 있는 최대 거리를 제한한다
+	if (correctedPenetration > Constants::MAX_POSITION_CORRECTION_PER_STEP)
+	{
+		correctedPenetration = Constants::MAX_POSITION_CORRECTION_PER_STEP;
+	}
+
 	float totalMass = m_mass + other->m_mass;
 	float pushRatioSelf = other->m_mass / totalMass;
 	float pushRatioOther = m_mass / totalMass;
+
 	m_position += normal * (correctedPenetration * pushRatioSelf);
 	other->m_position -= normal * (correctedPenetration * pushRatioOther);
 
@@ -493,6 +624,8 @@ void Block::BeginToppling()
 {
 	// 속도/각속도를 인위적으로 바꾸지 않는다 — 그 순간의 실제 속도를 그대로 이어받아야 자연스럽다.
 	// 여기서 바뀌는 건 상태뿐이다. 이후로는 순수하게 진짜 물리(중력 + 바닥/블럭 충돌)만으로 움직인다
+	LogStateChange(this, "-> Toppling");
+
 	m_physicsState = PhysicsState::Toppling;
 	m_hasToppled = true;
 
@@ -510,9 +643,18 @@ void Block::DampVelocity(float dampingFactor)
 	m_velocity = m_velocity * dampingFactor;
 }
 
+void Block::DampAngularVelocity(float dampingFactor)
+{
+	m_angularVelocity *= dampingFactor;
+}
+
 void Block::WakeUp()
 {
-	// TODO: Sleeping -> Awake 전환 및 관련 상태 갱신 직접 구현
+	LogStateChange(this, "-> Awake (WakeUp)");
+
+	// [강제 취침 타임아웃] 여기서도 타이머를 리셋하지 않는다 — Sleep()과 동일한 이유:
+	// Sleep<->Wake를 반복하는 동안 m_activeTimer가 끊기지 않고 누적돼야 ForceSleepStuckBlocks가
+	// 3초를 채울 수 있다.
 	m_physicsState = PhysicsState::Awake;
 }
 void Block::Sleep()
@@ -532,8 +674,20 @@ void Block::Sleep()
 
 	if (!m_hasToppled)
 	{
-		m_position.x = std::round(m_position.x / Constants::SUBCELL_SIZE) * Constants::SUBCELL_SIZE;
-		m_position.y = std::round(m_position.y / Constants::SUBCELL_SIZE) * Constants::SUBCELL_SIZE;
+		// [Sleep 스냅] 각도 스냅과 대칭되는 안전장치 — 허용 오차 없이 무조건 반올림하면 물리 솔버가
+		// 침투 없이 정착시킨 위치를 다시 밀어넣어 옆 블록과 겹치게 만들 수 있다. 이미 격자에
+		// POSITION_SNAP_TOLERANCE 이내로 가까울 때만, 그 축만 스냅한다.
+		float snappedX = std::round(m_position.x / Constants::SUBCELL_SIZE) * Constants::SUBCELL_SIZE;
+		float snappedY = std::round(m_position.y / Constants::SUBCELL_SIZE) * Constants::SUBCELL_SIZE;
+
+		if (std::fabs(m_position.x - snappedX) <= Constants::POSITION_SNAP_TOLERANCE)
+		{
+			m_position.x = snappedX;
+		}
+		if (std::fabs(m_position.y - snappedY) <= Constants::POSITION_SNAP_TOLERANCE)
+		{
+			m_position.y = snappedY;
+		}
 		m_velocity = { 0.0f, 0.0f };
 	}
 
@@ -542,8 +696,23 @@ void Block::Sleep()
 	// 그때마다 리셋되면 3초를 채울 기회가 영영 없다. 진짜로 새 불안정 사건이 시작되는 Land()/BeginToppling()
 	// 에서만 리셋해서, 이런 Sleep<->Wake 반복 중에도 누적 시간이 끊기지 않게 한다.
 	m_physicsState = PhysicsState::Sleeping;
+
+	LogStateChange(this, "-> Sleeping");
+}
+void Block::AdvanceRestTimer(float deltaTime)
+{
+	m_restTimer += deltaTime;
 }
 
+void Block::ResetRestTimer()
+{
+	m_restTimer = 0.0f;
+}
+
+float Block::GetRestTimer() const
+{
+	return m_restTimer;
+}
 void Block::AdvanceActiveTimer(float deltaTime)
 {
 	m_activeTimer += deltaTime;
@@ -556,7 +725,13 @@ float Block::GetActiveTimer() const
 
 void Block::Land()
 {
-	m_position = { m_gridX * Constants::SUBCELL_SIZE, m_gridY * Constants::SUBCELL_SIZE };
+	LogStateChange(this, "-> Awake (Land)");
+
+	// [그리드-연속 경계] 그리드 칸에 딱 맞춰 배치하는 대신, 실제 장애물까지 남은 여유(dropOffset)만큼
+	// 더 내려간 위치에 배치한다 — 최대 24px(한 서브셀)까지 남아있던 "허공에 뜬 채로 락" 간격이 사라져서,
+	// 착지 직후 잠깐 멈췄다가 다시 떨어지는 어색함 없이 바로 실제 접촉 위치에서 물리가 시작된다.
+	float dropOffset = ComputeContinuousDropOffset();
+	m_position = { m_gridX * Constants::SUBCELL_SIZE, m_gridY * Constants::SUBCELL_SIZE + dropOffset };
 	m_physicsState = PhysicsState::Awake;
 	m_activeTimer = 0.0f;
 }

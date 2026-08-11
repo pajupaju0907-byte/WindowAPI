@@ -20,25 +20,28 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
     srand(static_cast<unsigned int>(time(nullptr)));
-    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
-    ULONG_PTR gdiplusToken;
-    Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr);
 
-    // GDI+ 초기화 완료
-
-    if (!WindowManager::GetInstance().Init(hInstance, nCmdShow))
+    // WIC(스프라이트 PNG 디코딩)가 COM을 쓰므로, WindowManager::Init()에서 WIC 팩토리를 만들기 전에
+    // 이 스레드에 COM을 초기화해둬야 한다
+    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
     {
         return FALSE;
     }
-    SceneManager::GetInstance().ChangeScene(SceneType::Play);
+
+    if (!WindowManager::GetInstance().Init(hInstance, nCmdShow))
+    {
+        CoUninitialize();
+        return FALSE;
+    }
+    SceneManager::GetInstance().ChangeScene(SceneType::Title);
     InvalidateRect(WindowManager::GetInstance().GetWindowHandle(), nullptr, FALSE);
 
     int result = WindowManager::GetInstance().MessageLoop();
 
-    // 모든 리소스를 명시적으로 해제하여 GDI+가 활성화된 상태에서
-    // 비트맵들이 파괴되게 합니다.
+    // Direct2D 비트맵(ComPtr)들이 프로세스 종료 전에, COM이 아직 살아있는 상태에서 해제되도록
+    // 명시적으로 정리한다
     ResourceManager::GetInstance().Shutdown();
 
-    Gdiplus::GdiplusShutdown(gdiplusToken);
+    CoUninitialize();
     return result;
 }
