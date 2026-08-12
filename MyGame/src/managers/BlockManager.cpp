@@ -171,7 +171,7 @@ float BlockManager::GetTallestHeightMeters() const
 		{
 			continue;
 		}
-		float blockY = block->GetRenderPosition().y;
+		float blockY = block->GetWorldBounds().min.y;
 		if (!hasStackedBlock || blockY < highestBlockY)
 		{
 			highestBlockY = blockY;
@@ -196,6 +196,8 @@ bool BlockManager::IsPointInDeathZone(Vector2 worldPoint) const
 
 void BlockManager::CheckDeathZone()
 {
+	
+    
     if (m_isGameOver)
     {
         return;
@@ -203,6 +205,10 @@ void BlockManager::CheckDeathZone()
 
     for (Block* block : GetAllBlocks())
     {
+        if (block->GetPhysicsState() == PhysicsState::Sleeping)
+        {
+            continue;
+        }
         for (int i = 0; i < block->GetCellCount(); ++i)
         {
             Vector2 corners[4];

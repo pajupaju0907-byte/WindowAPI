@@ -174,10 +174,11 @@
     <ClInclude Include="src\managers\GridManager.h" />
     <ClInclude Include="src\managers\CameraManager.h" />
     <ClInclude Include="src\managers\ResourceManager.h" />
+    <ClInclude Include="src\managers\SoundManager.h" />
     <ClInclude Include="src\managers\RenderManager.h" />
     <ClInclude Include="src\managers\UIManager.h" />
     <ClInclude Include="src\collision\Collider.h" />
-    <ClInclude Include="src\collision\AABBCollider.h" />
+    <ClInclude Include="src\collision\OBBCollider.h" />
     <ClInclude Include="src\objects\Block.h" />
     <ClInclude Include="src\objects\TetrominoBlock.h" />
     <ClInclude Include="src\objects\GiantTetrominoBlock.h" />
@@ -211,9 +212,10 @@
     <ClCompile Include="src\managers\GridManager.cpp" />
     <ClCompile Include="src\managers\CameraManager.cpp" />
     <ClCompile Include="src\managers\ResourceManager.cpp" />
+    <ClCompile Include="src\managers\SoundManager.cpp" />
     <ClCompile Include="src\managers\RenderManager.cpp" />
     <ClCompile Include="src\managers\UIManager.cpp" />
-    <ClCompile Include="src\collision\AABBCollider.cpp" />
+    <ClCompile Include="src\collision\OBBCollider.cpp" />
     <ClCompile Include="src\objects\Block.cpp" />
     <ClCompile Include="src\objects\TetrominoBlock.cpp" />
     <ClCompile Include="src\objects\GiantTetrominoBlock.cpp" />

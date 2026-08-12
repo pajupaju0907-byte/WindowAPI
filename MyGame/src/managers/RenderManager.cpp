@@ -221,9 +221,9 @@ void RenderManager::DrawSupportDebug(ID2D1RenderTarget* renderTarget)
 			continue;
 		}
 
-		// ResolveBalance와 같은 IMBALANCE_DEADZONE 여유를 적용해서, 실제로 넘어지지 않을 미세한
-		// 오차까지 빨간색으로 표시해 헷갈리는 일이 없게 한다
-		bool balanced = combinedComX >= minX - Constants::IMBALANCE_DEADZONE && combinedComX <= maxX + Constants::IMBALANCE_DEADZONE;
+		// ResolveBalance와 같은 기준(지지 범위 안쪽으로 IMBALANCE_DEADZONE만큼 여유가 있는지)을 적용해서,
+		// 실제로 넘어질(또는 칼날 위 균형인) 경우까지 초록색으로 잘못 표시하는 일이 없게 한다
+		bool balanced = combinedComX >= minX + Constants::IMBALANCE_DEADZONE && combinedComX <= maxX - Constants::IMBALANCE_DEADZONE;
 		COLORREF color = balanced ? RGB(0, 200, 80) : RGB(255, 0, 0);
 
 		Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
@@ -298,6 +298,39 @@ void RenderManager::FillRect(ID2D1RenderTarget* renderTarget, Vector2 center, Ve
 		center.x - size.x / 2.0f, center.y - size.y / 2.0f,
 		center.x + size.x / 2.0f, center.y + size.y / 2.0f);
 	renderTarget->FillRectangle(rect, brush.Get());
+}
+
+void RenderManager::FillPolygon(ID2D1RenderTarget* renderTarget, const Vector2* points, int pointCount, COLORREF color, float opacity)
+{
+	if (pointCount < 3)
+	{
+		return;
+	}
+
+	Microsoft::WRL::ComPtr<ID2D1Factory> factory;
+	renderTarget->GetFactory(factory.GetAddressOf());
+
+	Microsoft::WRL::ComPtr<ID2D1PathGeometry> geometry;
+	factory->CreatePathGeometry(geometry.GetAddressOf());
+
+	Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+	geometry->Open(sink.GetAddressOf());
+
+	sink->BeginFigure(D2D1::Point2F(points[0].x, points[0].y), D2D1_FIGURE_BEGIN_FILLED);
+	for (int i = 1; i < pointCount; ++i)
+	{
+		sink->AddLine(D2D1::Point2F(points[i].x, points[i].y));
+	}
+	sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+	sink->Close();
+
+	D2D1_COLOR_F colorF = ToColorF(color);
+	colorF.a = opacity;
+
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush;
+	renderTarget->CreateSolidColorBrush(colorF, brush.GetAddressOf());
+
+	renderTarget->FillGeometry(geometry.Get(), brush.Get());
 }
 
 void RenderManager::DrawCenterOfMass(ID2D1RenderTarget* renderTarget)

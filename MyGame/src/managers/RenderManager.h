@@ -65,6 +65,12 @@ public:
 	/// @param opacity 불투명도(0~1)
 	void FillRect(ID2D1RenderTarget* renderTarget, Vector2 center, Vector2 size, COLORREF color, float opacity);
 
+	/// @brief points를 순서대로 이어 만든 다각형을 채워 그린다. 사각형이 아닌 UI 모양(예: 스피커 아이콘의
+	/// 세모 콘)을 그릴 때 쓴다.
+	/// @param points 다각형 꼭짓점(화면 좌표) 배열, 최소 3개
+	/// @param pointCount points 배열의 꼭짓점 개수
+	void FillPolygon(ID2D1RenderTarget* renderTarget, const Vector2* points, int pointCount, COLORREF color, float opacity = 1.0f);
+
 private:
 	RenderManager() = default;
 	~RenderManager() = default;

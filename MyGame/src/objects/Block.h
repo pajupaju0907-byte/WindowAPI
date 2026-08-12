@@ -5,6 +5,7 @@
 #include "../util/Types.h"
 
 class Collider;
+class OBBCollider;
 
 // 모든 블럭 종류(테트로미노/원형/거대/무거운 블럭)의 공통 베이스.
 // 물리 적분(Integrate)과 힘 적용(ApplyForce)은 블럭 종류와 무관하게 동일하므로 여기서 구현하고,
@@ -97,6 +98,12 @@ public:
 	// 판정하려면 기울어진 사각형의 네 꼭짓점을 다 알아야 해서 필요하다 (바닥/블럭 충돌에서 씀)
 	void GetCellRotatedCorners(int cellIndex, Vector2 outCorners[4]) const;
 
+	// [충돌 판정 책임 분리] cellIndex번 칸을 OBBCollider로 표현해서 돌려준다. 회전 반영된 칸 중심
+	// (GetCellCenterRotated)과 칸 크기의 절반(halfExtents), 블럭의 현재 각도를 그대로 담는다 —
+	// GetCellRotatedCorners와 수학적으로 동일한 네 꼭짓점을 만들어내며, CollisionManager가 칸 단위
+	// SAT 검사를 할 때 이 콜라이더를 통해서만 접근하게 해서 충돌 판정 로직을 한 곳에 모은다.
+	OBBCollider GetCellCollider(int cellIndex) const;
+
 	// 이 블럭의 무게중심을, m_cellShape와 같은 단위(테트리스 칸 단위)의 "로컬" 좌표로 반환.
 	// 4칸이 각각 같은 질량을 가진다고 가정하고 4칸 중심의 평균을 낸다.
 	// [강체물리 1단계] 회전은 이제 이 지점을 기준으로 계산한다 (예전엔 90도 스냅 회전용 m_pivot을 대신 썼었음).
@@ -157,6 +164,21 @@ public:
 	// 무한 회전 걱정 없이 ApplyBalanceTorque를 마음 놓고 쓸 수 있다
 	void BeginToppling();
 
+	// [무한 재넘어짐 방지] BeginToppling()이 Sleep() 없이 연속으로 몇 번 호출됐는지 돌려준다.
+	// PhysicsManager::ResolveBalance가 이 값이 MAX_CONSECUTIVE_TOPPLE_COUNT를 넘으면 다시 넘어뜨리는
+	// 대신 ForceStabilize()로 강제로 멈추게 하는 데 쓴다.
+	int GetConsecutiveToppleCount() const;
+
+	// [무한 재넘어짐 방지] 재넘어짐 카운트를 0으로 되돌린다. Sleep() 자체는 이걸 하지 않는다(ForceStabilize도
+	// Sleep()을 거치기 때문 — 강제로 재운 것까지 리셋하면 다음 프레임에 또 5번 재시도하는 묶음이 반복된다).
+	// PhysicsManager::TrySleepAll처럼 "진짜로 안정돼서 스스로 잠들었다"고 확인된 경로에서만 호출한다.
+	void ResetConsecutiveToppleCount();
+
+	// [무한 재넘어짐 방지] 옆 블록 등에 막혀서 실제로는 못 넘어가는데 계속 넘어지려고 진동하는 블록을
+	// 강제로 멈춘다. 속도/각속도를 0으로 죽이고 곧바로 Sleep() 시킨다 — 물리적으로 "정확히" 안정된 상태가
+	// 아니어도, 무한 진동보다는 그 자리에서 멈추는 쪽이 낫다는 판단.
+	void ForceStabilize();
+
 	// [넘어짐 피벗 고정] pivotWorld(월드 좌표)를 축으로 삼아, TOPPLE_PIVOT_LOCK_DURATION 동안 그 지점이
 	// 화면에서 안 움직이도록 위치를 고정한 채 회전만 시킨다 — 무게중심 축 회전 때문에 접촉 모서리가
 	// 허공으로 붕 뜨는 걸 막는 용도. BeginToppling() 직후에 호출해서 쓴다.
@@ -210,6 +232,11 @@ protected:
 	// 테트리스처럼 격자에 딱 맞게 스냅시키고 싶지만, 넘어진 블럭까지 스냅하면 물리로 자연스럽게 기운
 	// 각도가 강제로 90도 단위로 꺾여버려 어색해진다 — 그래서 Toppling을 거친 적 있는지 구분해서 쓴다
 	bool m_hasToppled = false;
+	// [무한 재넘어짐 방지] BeginToppling()이 Sleep() 없이 연속으로 몇 번 불렸는지 센다. 옆 블록에 막혀서
+	// 실제로는 못 넘어가는데 ResolveBalance가 무게중심 판정만 보고 매번 다시 넘어뜨리려 드는 경우, 지지대가
+	// 있고 속도가 낮아져도(SettleToppledBlocks) Awake로 돌아오자마자 곧바로 또 Toppling으로 되돌아가길
+	// 반복한다. Sleep()에서 0으로 리셋되고, BeginToppling()마다 1씩 늘어난다.
+	int m_consecutiveToppleCount = 0;
 	PhysicsState m_physicsState = PhysicsState::Airborne;
 	std::unique_ptr<Collider> m_collider;
 	std::string m_spriteId;

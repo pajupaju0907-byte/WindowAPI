@@ -2,6 +2,7 @@
 
 #include "Block.h"
 #include "../collision/Collider.h"
+#include "../collision/OBBCollider.h"
 #include "../managers/BlockManager.h"
 #include "../managers/PhysicsManager.h"
 #include "../util/Constants.h"
@@ -18,6 +19,34 @@ namespace
 		char text[96];
 		std::snprintf(text, sizeof(text), "[Physics] Block %p: %s\n", block, reason);
 		OutputDebugStringA(text);
+	}
+
+	// [임시 디버그 - 위로 튐 원인 조사용] 충돌 반응 한 번으로 위쪽(-y) 속도가 비정상적으로 커지면
+	// 그 순간의 전후 상태를 파일로 남긴다. 원인을 찾으면 이 함수와 호출부는 지워도 된다.
+	void LogIfSuspiciousUpwardVelocity(const char* where, const void* block, Vector2 contactPoint, Vector2 normal,
+		float penetration, float velocityAlongNormalBefore, float restitution, float impulseMagnitude,
+		Vector2 velocityBefore, Vector2 velocityAfter, float angularVelocityBefore, float angularVelocityAfter,
+		int physicsState, float pivotLockTimeRemaining)
+	{
+		if (velocityAfter.y > -20.0f)
+		{
+			return;
+		}
+
+		FILE* file = nullptr;
+		fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
+		if (file == nullptr)
+		{
+			return;
+		}
+
+		std::fprintf(file,
+			"[%s] block=%p state=%d pivotLock=%.3f contact=(%.1f,%.1f) normal=(%.2f,%.2f) pen=%.2f vAlongNormalBefore=%.1f "
+			"restitution=%.3f impulse=%.1f vBefore=(%.1f,%.1f) vAfter=(%.1f,%.1f) wBefore=%.1f wAfter=%.1f\n",
+			where, block, physicsState, pivotLockTimeRemaining, contactPoint.x, contactPoint.y, normal.x, normal.y, penetration,
+			velocityAlongNormalBefore, restitution, impulseMagnitude, velocityBefore.x, velocityBefore.y,
+			velocityAfter.x, velocityAfter.y, angularVelocityBefore, angularVelocityAfter);
+		std::fclose(file);
 	}
 }
 
@@ -78,7 +107,7 @@ bool Block::CanOccupy(int originGridX, int originGridY) const
 				Vector2 otherCorners[4];
 				other->GetCellRotatedCorners(j, otherCorners);
 
-				if (PhysicsManager::GetInstance().TestCellCollision(candidateCorners, otherCorners).collided)
+				if (TestOBBCollision(candidateCorners, otherCorners).collided)
 				{
 					return false;
 				}
@@ -216,12 +245,23 @@ void Block::ApplyForce(Vector2 force)
 // 매 프레임 새로 힘을 받아야 하므로 마지막에 누적값을 리셋한다.
 void Block::Integrate(float deltaTime)
 {
-	Vector2 acceleration = m_accumulatedForce * (1.0f / m_mass);
-	m_velocity += acceleration * deltaTime;
+	// [피벗 고정 중 속도 누수 방지] 잠겨 있는 동안은 m_velocity가 위치에 전혀 반영되지 않는데(아래
+	// pivotLockTimeRemaining>0 분기 참고), 그렇다고 중력 가속도 누적까지 막지 않으면 잠긴 시간(최대
+	// TOPPLE_PIVOT_LOCK_DURATION초) 내내 m_velocity.y가 화면엔 안 보이는 채로 계속 커진다. 이게
+	// 잠금이 풀리는 순간 한꺼번에 위치에 반영되면서, 그리고 그 부풀려진 속도로 다음 바닥/블럭
+	// 충돌이 "매우 빠른 충돌"로 오판되어 큰 반발 임펄스를 만들면서 위로 튀는 원인이 된다.
+	// 잠긴 동안은 힘을 그냥 버린다 — 그 시간 동안의 중력은 피벗이 대신 떠받치고 있다고 보는 것.
+	bool isPivotLocked = m_pivotLockTimeRemaining > 0.0f;
+
+	if (!isPivotLocked)
+	{
+		Vector2 acceleration = m_accumulatedForce * (1.0f / m_mass);
+		m_velocity += acceleration * deltaTime;
+	}
 
 	m_angle += m_angularVelocity * deltaTime;
 
-	if (m_pivotLockTimeRemaining > 0.0f)
+	if (isPivotLocked)
 	{
 		// [넘어짐 피벗 고정] 위치를 그냥 적분하는 대신, 캡처 시점 이후 회전한 만큼(deltaAngle)만큼
 		// m_pivotOffsetAtCapture(무게중심->피벗 오프셋)를 같이 돌려서, 그 결과가 여전히
@@ -241,6 +281,19 @@ void Block::Integrate(float deltaTime)
 		m_position = centerOfMassWorldTarget - GetCenterOfMassLocal() * Constants::TILE_SIZE;
 
 		m_pivotLockTimeRemaining -= deltaTime;
+
+		// [핸드오프] 잠금이 이 프레임에 끝나면, 다음 프레임부터는 m_velocity로 실제 위치를 적분하게 된다.
+		// 잠긴 동안 쌓였을 수 있는(충돌 반응 등에서 온) 남은 속도를 그대로 이어받는 대신, 지금 이 순간
+		// 실제로 보이던 회전 운동(무게중심이 피벗을 축으로 각속도 ω로 돌 때의 접선 속도)으로 다시
+		// 계산해서 덮어쓴다 — 회전으로 눈에 보이던 움직임과 정확히 이어지는 속도라, 딱 끊거나(0으로 리셋)
+		// 갑자기 튀지 않고 부드럽게 일반 물리로 넘어간다.
+		if (m_pivotLockTimeRemaining <= 0.0f)
+		{
+			Vector2 centerOfMassWorld = m_position + GetCenterOfMassLocal() * Constants::TILE_SIZE;
+			Vector2 pivotToCenter = centerOfMassWorld - m_pivotWorldTarget;
+			float angularVelocityRad = MathUtil::DegreesToRadians(m_angularVelocity);
+			m_velocity = { -pivotToCenter.y * angularVelocityRad, pivotToCenter.x * angularVelocityRad };
+		}
 	}
 	else
 	{
@@ -258,6 +311,7 @@ void Block::SetTopplePivot(Vector2 pivotWorld)
 	m_pivotCaptureAngle = m_angle;
 	m_pivotLockTimeRemaining = Constants::TOPPLE_PIVOT_LOCK_DURATION;
 }
+
 void Block::SetGridPosition(int gridX, int gridY)
 {
 	m_gridX = gridX;
@@ -326,6 +380,12 @@ void Block::GetCellRotatedCorners(int cellIndex, Vector2 outCorners[4]) const
 	outCorners[1] = RotateLocalPointToWorld(topLeft + Vector2{ 1.0f, 0.0f }); // 오른쪽 위
 	outCorners[2] = RotateLocalPointToWorld(topLeft + Vector2{ 1.0f, 1.0f }); // 오른쪽 아래
 	outCorners[3] = RotateLocalPointToWorld(topLeft + Vector2{ 0.0f, 1.0f }); // 왼쪽 아래
+}
+
+OBBCollider Block::GetCellCollider(int cellIndex) const
+{
+	Vector2 halfExtents = { Constants::TILE_SIZE * 0.5f, Constants::TILE_SIZE * 0.5f };
+	return OBBCollider(GetCellCenterRotated(cellIndex), halfExtents, m_angle);
 }
 
 Vector2 Block::GetCenterOfMassLocal() const
@@ -476,7 +536,15 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 	float rCrossNormal = r.x * normal.y - r.y * normal.x;
 	float momentOfInertia = GetMomentOfInertia();
 	float inverseMassTerm = (1.0f / m_mass) + (rCrossNormal * rCrossNormal) / momentOfInertia;
-	float impulseMagnitude = -(1.0f + Constants::BOUNCE_RESTITUTION) * velocityAlongNormal / inverseMassTerm;
+
+	// [Resting contact] 접촉점 속도(무게중심 속도 + 회전 접선 속도)가 WAKE_IMPACT_SPEED_THRESHOLD보다
+	// 작으면 "진짜 충돌"이 아니라 얹혀서 미세하게 흔들리거나 회전 중인 상태로 본다 — restitution을 0으로
+	// 눌러서 안 튕기게 한다. 안 그러면 기울어진 블록의 회전 접선 속도가 노멀 성분으로 새어들어와
+	// 매 프레임 "가짜 충돌"처럼 반복 튕기며 안정 접촉 떨림과, 심하면 위로 튀는 현상까지 만든다.
+	float restitution = (-velocityAlongNormal < Constants::WAKE_IMPACT_SPEED_THRESHOLD) ? 0.0f : Constants::BOUNCE_RESTITUTION;
+	float impulseMagnitude = -(1.0f + restitution) * velocityAlongNormal / inverseMassTerm;
+
+	Vector2 velocityBeforeImpulse = m_velocity; // [임시 디버그]
 
 	// 5) 구한 임펄스를 선속도/각속도 양쪽에 나눠 반영한다
 	Vector2 impulse = normal * impulseMagnitude;
@@ -505,11 +573,16 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 	newAngularVelocityRad += frictionAngularImpulse / momentOfInertia;
 
 	m_angularVelocity = MathUtil::RadiansToDegrees(newAngularVelocityRad);
+
+	LogIfSuspiciousUpwardVelocity("ResolveRigidCollision", this, contactPoint, normal, penetration,
+		velocityAlongNormal, restitution, impulseMagnitude, velocityBeforeImpulse, m_velocity,
+		MathUtil::RadiansToDegrees(angularVelocityRad), m_angularVelocity,
+		static_cast<int>(m_physicsState), m_pivotLockTimeRemaining); // [임시 디버그]
 }
 
 // [강체물리 3단계] ResolveRigidCollision과 구조는 같지만, "상대가 안 움직인다"는 가정이 없어서
 // other의 위치/속도/각속도도 함께 갱신한다 (뉴턴 3법칙: this가 받는 힘과 other가 받는 힘은 크기 같고 방향 반대).
-// normal은 반드시 "other -> this" 방향이어야 한다 (PhysicsManager::TestCellCollision이 그렇게 맞춰서 준다).
+// normal은 반드시 "other -> this" 방향이어야 한다 (TestOBBCollision/CollisionManager가 그렇게 맞춰서 준다).
 void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, Vector2 normal, float penetration)
 {
 	// 1) 위치 보정: 겹친 만큼을 질량 비율대로 나눠서 서로 반대 방향으로 밀어낸다 (무거운 쪽이 덜 밀림).
@@ -564,8 +637,14 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 		(rSelfCrossNormal * rSelfCrossNormal) / momentOfInertiaSelf +
 		(rOtherCrossNormal * rOtherCrossNormal) / momentOfInertiaOther;
 
-	float impulseMagnitude = -(1.0f + Constants::BOUNCE_RESTITUTION) * velocityAlongNormal / inverseMassTerm;
+	// [Resting contact] ResolveRigidCollision과 같은 이유로, 상대 접근 속도가 작으면(진짜 충돌이 아니면)
+	// restitution을 0으로 눌러서 안 튕기게 한다.
+	float restitution = (-velocityAlongNormal < Constants::WAKE_IMPACT_SPEED_THRESHOLD) ? 0.0f : Constants::BOUNCE_RESTITUTION;
+	float impulseMagnitude = -(1.0f + restitution) * velocityAlongNormal / inverseMassTerm;
 	Vector2 impulse = normal * impulseMagnitude;
+
+	Vector2 selfVelocityBeforeImpulse = m_velocity; // [임시 디버그]
+	Vector2 otherVelocityBeforeImpulse = other->m_velocity; // [임시 디버그]
 
 	// 5) 뉴턴의 3법칙: this는 +impulse(=other에게서 멀어지는 방향), other는 -impulse(=this에게서 멀어지는 방향)
 	m_velocity += impulse * (1.0f / m_mass);
@@ -605,6 +684,16 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 
 	m_angularVelocity = MathUtil::RadiansToDegrees(newAngularVelocitySelfRad);
 	other->m_angularVelocity = MathUtil::RadiansToDegrees(newAngularVelocityOtherRad);
+
+	// [임시 디버그]
+	LogIfSuspiciousUpwardVelocity("ResolveRigidCollisionWithBlock/self", this, contactPoint, normal, penetration,
+		velocityAlongNormal, restitution, impulseMagnitude, selfVelocityBeforeImpulse, m_velocity,
+		MathUtil::RadiansToDegrees(angularVelocitySelfRad), m_angularVelocity,
+		static_cast<int>(m_physicsState), m_pivotLockTimeRemaining);
+	LogIfSuspiciousUpwardVelocity("ResolveRigidCollisionWithBlock/other", other, contactPoint, normal * -1.0f, penetration,
+		-velocityAlongNormal, restitution, -impulseMagnitude, otherVelocityBeforeImpulse, other->m_velocity,
+		MathUtil::RadiansToDegrees(angularVelocityOtherRad), other->m_angularVelocity,
+		static_cast<int>(other->m_physicsState), other->m_pivotLockTimeRemaining);
 }
 
 void Block::ApplyBalanceTorque(float imbalance, float deltaTime)
@@ -637,7 +726,29 @@ void Block::BeginToppling()
 	// [강제 취침 타임아웃] 여기서부터가 진짜 새로운 불안정 사건의 시작이므로, 이전에 쌓여있던
 	// 활동 시간과 섞이지 않도록 여기서 새로 잰다
 	m_activeTimer = 0.0f;
+
+	// [무한 재넘어짐 방지] Sleep() 없이 다시 여기로 왔다는 뜻이므로 1 늘린다. Sleep()에서 0으로 리셋된다.
+	++m_consecutiveToppleCount;
 }
+
+int Block::GetConsecutiveToppleCount() const
+{
+	return m_consecutiveToppleCount;
+}
+
+void Block::ResetConsecutiveToppleCount()
+{
+	m_consecutiveToppleCount = 0;
+}
+
+void Block::ForceStabilize()
+{
+	LogStateChange(this, "-> ForceStabilize (stuck toppling loop)");
+	m_velocity = { 0.0f, 0.0f };
+	m_angularVelocity = 0.0f;
+	Sleep();
+}
+
 void Block::AddAngularVelocity(float amount)
 {
 	m_angularVelocity += amount;
@@ -701,6 +812,12 @@ void Block::Sleep()
 	// 그때마다 리셋되면 3초를 채울 기회가 영영 없다. 진짜로 새 불안정 사건이 시작되는 Land()/BeginToppling()
 	// 에서만 리셋해서, 이런 Sleep<->Wake 반복 중에도 누적 시간이 끊기지 않게 한다.
 	m_physicsState = PhysicsState::Sleeping;
+
+	// [무한 재넘어짐 방지] 재넘어짐 카운트는 여기서 리셋하지 않는다 — ForceStabilize()도 이 Sleep()을
+	// 거치는데, 만약 여기서 리셋해버리면 "반칸 걸침"처럼 진짜 애매한 경계에서는 강제로 재운 바로 다음
+	// 프레임에 다시 불안정 판정 → 카운트 0부터 5번 재시도 → 또 강제로 재움... 묶음이 영원히 반복된다.
+	// 그래서 "진짜로 안정돼서 스스로 잠든" 경로(TrySleepAll)에서만 리셋하고, ForceStabilize가 억지로
+	// 재운 경우엔 카운트를 그대로 유지해서 다음 재판정에도 곧바로 다시 ForceStabilize로 조용히 멈추게 한다.
 
 	LogStateChange(this, "-> Sleeping");
 }

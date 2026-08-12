@@ -3,8 +3,50 @@
 #include "PhysicsManager.h"
 #include "../objects/Block.h"
 #include "../managers/BlockManager.h"
+#include "../managers/CollisionManager.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+
+namespace
+{
+	// [임시 디버그 - 왜 지지를 못 받는지 조사용] SettleToppledBlocks가 저속인 Toppling 블록을
+	// 평가할 때마다 칸별 지지 판정 근거를 파일로 남긴다. 원인을 찾으면 지워도 된다.
+	void LogSettleAttempt(Block* block, bool hasSupport)
+	{
+		FILE* file = nullptr;
+		fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
+		if (file == nullptr)
+		{
+			return;
+		}
+
+		Vector2 pos = block->GetRenderPosition();
+		std::fprintf(file, "[SettleToppledBlocks] block=%p pos=(%.1f,%.1f) angle=%.2f speed=%.1f angVel=%.2f hasSupport=%d\n",
+			block, pos.x, pos.y, block->GetAngle(), std::sqrt(block->GetSpeedSquared()), block->GetAngularVelocity(), hasSupport ? 1 : 0);
+
+		for (int i = 0; i < block->GetCellCount(); ++i)
+		{
+			Vector2 corners[4];
+			block->GetCellRotatedCorners(i, corners);
+			float minX = corners[0].x, maxX = corners[0].x, bottomY = corners[0].y;
+			for (int c = 1; c < 4; ++c)
+			{
+				if (corners[c].x < minX) minX = corners[c].x;
+				if (corners[c].x > maxX) maxX = corners[c].x;
+				if (corners[c].y > bottomY) bottomY = corners[c].y;
+			}
+			float centerX = (minX + maxX) * 0.5f;
+			bool isOverFloorPlatform = centerX > Constants::FLOOR_LEFT_X && centerX < Constants::FLOOR_RIGHT_X;
+			bool isNearFloorHeight = bottomY >= Constants::FLOOR_TOP_Y - Constants::SUPPORT_CHECK_TOLERANCE &&
+				bottomY <= Constants::FLOOR_TOP_Y + Constants::SUPPORT_CHECK_TOLERANCE;
+			std::fprintf(file, "  cell%d minX=%.1f maxX=%.1f centerX=%.1f bottomY=%.1f floorTopY=%.1f floorX=[%.1f,%.1f] overFloorX=%d nearFloorY=%d\n",
+				i, minX, maxX, centerX, bottomY, Constants::FLOOR_TOP_Y, Constants::FLOOR_LEFT_X, Constants::FLOOR_RIGHT_X,
+				isOverFloorPlatform ? 1 : 0, isNearFloorHeight ? 1 : 0);
+		}
+		std::fclose(file);
+	}
+}
 
 PhysicsManager& PhysicsManager::GetInstance()
 {
@@ -59,26 +101,35 @@ void PhysicsManager::Step(float deltaTime)
         ResolveBlockCollisions();
     }
 
-    // 2.5. [바닥 마찰 근사] 지지대가 있는 블럭은 매 프레임 속도를 감쇠시켜서 미끄러짐을 잡는다.
-    // ResolveRigidCollision의 임펄스 마찰은 얹혀서 미끄러지는 동안(수직 속도 거의 0)엔 안 걸리기 때문에 필요하다
+    // 2.5. [바닥 마찰 근사] 지지대가 있는 Awake 블럭은 매 프레임 속도를 감쇠시켜서 미끄러짐을 잡는다.
+    // ResolveRigidCollision의 임펄스 마찰은 얹혀서 미끄러지는 동안(수직 속도 거의 0)엔 안 걸리기 때문에 필요하다.
+    // [넘어지는 중엔 제외] Toppling은 일부러 뺐다 — 넘어지는 도중엔 피벗 모서리가 거의 계속 바닥/다른
+    // 블럭에 닿아 있어서(hasSupport=true) 이 감쇠가 매초 60번씩 각속도를 깎았다. "가만히 얹힌 블록이
+    // 안 미끄러지게" 하려고 만든 감쇠인데, 지금 활발히 회전하며 넘어지는 블록에도 똑같이 걸려서 초기
+    // 회전력이 거의 즉시 죽어버리고, 재넘어짐마다 그 죽은 속도에서 다시 시작해 넘어짐이 부자연스럽게
+    // 느려 보이는 원인이었다. 넘어지는 중엔 실제 중력+충돌 임펄스만으로 가속되게 둔다.
     for (Block* block : BlockManager::GetInstance().GetAllBlocks())
     {
-        bool isActive = block->GetPhysicsState() == PhysicsState::Awake || block->GetPhysicsState() == PhysicsState::Toppling;
+        bool isActive = block->GetPhysicsState() == PhysicsState::Awake;
         if (!isActive)
         {
             continue;
         }
 
-        bool hasSupport = false;
-        for (int i = 0; i < block->GetCellCount() && !hasSupport; ++i)
+        // [마찰 사각지대 방지] 여기는 일부러 엄격한 IsCellSupported 대신 느슨한 IsCellTouchingAnySupport를
+        // 쓴다 — 모서리로만 살짝 걸친 상태도 마찰을 받아야, 중력에 살짝 밀렸다가 충돌에 다시 튕기는 게
+        // 감쇠 없이 반복되며 영원히 떠는 사각지대가 안 생긴다. "진짜 안정적인지"는 아래 ResolveBalance가
+        // IsCellSupported(엄격)로 따로 판단하니, 여기서 느슨하게 봐준다고 넘어져야 할 게 안 넘어지진 않는다.
+        bool isTouchingAnySupport = false;
+        for (int i = 0; i < block->GetCellCount() && !isTouchingAnySupport; ++i)
         {
-            if (IsCellSupported(block, i))
+            if (IsCellTouchingAnySupport(block, i))
             {
-                hasSupport = true;
+                isTouchingAnySupport = true;
             }
         }
 
-        if (hasSupport)
+        if (isTouchingAnySupport)
         {
             block->DampVelocity(Constants::GROUNDED_VELOCITY_DAMPING);
             block->DampAngularVelocity(Constants::GROUNDED_ANGULAR_DAMPING);
@@ -108,7 +159,7 @@ void PhysicsManager::Step(float deltaTime)
     }
 
     RemoveToppledBlocks();
-    SettleToppledBlocks();
+    SettleToppledBlocks(restingChildren);
     TrySleepAll(deltaTime);
 }
 void PhysicsManager::ApplyGravity(Block* block)
@@ -120,168 +171,35 @@ void PhysicsManager::ApplyGravity(Block* block)
 
 void PhysicsManager::ResolveFloorCollision(Block* block)
 {
-    // [Contact Manifold] 칸마다 회전이 반영된 네 모서리를 전부 검사해서, 바닥에 닿은(파고든) 모서리를
-    // 모아 "가장 깊이 파고든 정도"(위치 보정용)와 "가로로 가장 멀리 떨어진 두 점"(왼쪽 끝/오른쪽 끝,
-    // 접촉점으로 사용)을 구한다. 예전엔 "가장 깊은 것 + 그다음 깊은 것"을 발견 순서대로 골랐는데,
-    // I자처럼 셀이 여러 개 나란히 붙어 평평하게 누우면 닿은 모서리가 전부 같은 깊이라서 맨 처음 셀
-    // 하나의 두 모서리(48px 간격)만 우연히 뽑히고 반대쪽 끝은 접촉점으로 안 잡혀 시소처럼 계속
-    // 흔들렸다. 바닥 노멀은 항상 수평 위쪽 고정이라, 가로(X) 극값 두 개만 찾으면 충분하다.
-    float deepestPenetration = -999999.0f;
-    float leftmostX = 999999.0f;
-    float rightmostX = -999999.0f;
-    Vector2 leftmostCorner = { 0.0f, 0.0f };
-    Vector2 rightmostCorner = { 0.0f, 0.0f };
-    bool touchedAny = false;
-
-    for (int i = 0; i < block->GetCellCount(); ++i)
-    {
-        Vector2 corners[4];
-        block->GetCellRotatedCorners(i, corners);
-
-        for (int c = 0; c < 4; ++c)
-        {
-            // 발판 옆은 빈 공간이라, y좌표가 바닥 높이여도 x좌표가 발판 범위 밖이면 충돌이 아니다
-            bool isOverFloorPlatform = corners[c].x > Constants::FLOOR_LEFT_X && corners[c].x < Constants::FLOOR_RIGHT_X;
-            if (!isOverFloorPlatform)
-            {
-                continue;
-            }
-
-            float penetration = corners[c].y - Constants::FLOOR_TOP_Y;
-            if (penetration <= 0.0f)
-            {
-                continue; // 안 닿음
-            }
-
-            touchedAny = true;
-            if (penetration > deepestPenetration)
-            {
-                deepestPenetration = penetration;
-            }
-            if (corners[c].x < leftmostX)
-            {
-                leftmostX = corners[c].x;
-                leftmostCorner = corners[c];
-            }
-            if (corners[c].x > rightmostX)
-            {
-                rightmostX = corners[c].x;
-                rightmostCorner = corners[c];
-            }
-        }
-    }
-
-    if (!touchedAny)
+    // [바닥 SAT 통합] 바닥을 하나의 정적 OBB로 취급해서, 블럭-블럭과 똑같이 CollisionManager가
+    // 칸 단위 SAT + 접촉 매니폴드(접촉점 2개) 판정을 전담한다. 예전엔 여기서 직접 칸의 네 모서리를
+    // 스캔하며 법선을 항상 (0,-1)로 고정하고 왼쪽/오른쪽 끝 모서리를 손으로 골랐는데, 그 판정 로직이
+    // 이제 CollisionManager::DetectFloorCollision 하나로 모였다 — 여기서는 결과를 받아 반응만 한다.
+    CollisionPair pair;
+    if (!CollisionManager::GetInstance().DetectFloorCollision(block, pair))
     {
         return;
     }
 
-    // 바닥은 항상 수평이라 노멀(밀어내는 방향)은 늘 "위쪽" 고정.
-    // 왼쪽 끝 점은 위치 보정 + 속도/토크 반응을 다 하고, 오른쪽 끝 점은 이미 밀어낸 뒤라
-    // penetration을 0으로 넘겨서 위치는 안 건드리고 속도/토크 반응만 추가로 준다.
-    // (닿은 모서리가 1개뿐인 코너 접촉이면 leftmostCorner==rightmostCorner가 되어 자연히 1점 충돌과 동일하게 동작한다)
-    Vector2 floorNormal = { 0.0f, -1.0f };
-    block->ResolveRigidCollision(leftmostCorner, floorNormal, deepestPenetration);
-    block->ResolveRigidCollision(rightmostCorner, floorNormal, 0.0f);
+    // [접촉 다각화] 첫 번째 점만 위치 보정을 하고(penetration 그대로), 두 번째 점은 이미 밀어낸 뒤라
+    // penetration을 0으로 넘겨서 속도/토크 반응만 추가로 준다 — 면과 면이 맞닿았을 때 양 끝을 동시에
+    // 붙잡아서 미세 회전(떨림)이 사라진다.
+    block->ResolveRigidCollision(pair.contactPoints[0], pair.normal, pair.penetration);
+    block->ResolveRigidCollision(pair.contactPoints[1], pair.normal, 0.0f);
 }
 
 void PhysicsManager::ResolveBlockPairCollision(Block* block, Block* other)
 {
-    // [강체물리 3단계] SAT로 "진짜" 겹침 여부/깊이/방향/접촉점을 구하고 강체 충돌로 반응한다.
-    // 두 블럭 실제 칸(최대 4x4=16쌍)끼리 하나씩 검사 — 바운딩 박스만 보면 L자 같은 오목한 모양의 빈 홈을
-    // "꽉 찬 것"처럼 취급해버려서 실제로는 안 겹치는데도 반응하는 문제가 생기기 때문.
-    //
-    // [Over-solving 방지] 예전엔 겹치는 칸 쌍을 찾을 때마다 그 자리에서 바로 충돌 반응을 적용했는데,
-    // 두 블럭이 여러 칸에 걸쳐 동시에 닿으면(예: T자가 일자 위에 반듯하게 얹히는 경우 3칸이 한 번에 겹침)
-    // 위치 보정/임펄스가 겹친 칸 개수만큼 중첩되어 실제보다 훨씬 세게 튕겨나가는 문제가 있었다.
-    // 그래서 16쌍을 다 검사하되 반응은 적용하지 않고, 그중 "가장 깊이 겹친" 충돌 하나만 골라서
-    // 블럭 쌍(block, other)당 딱 한 번만 반응한다.
-    // [성능] 이 함수는 솔버 반복(최대 4회) x 물리 서브스텝(최대 5회)마다 "움직이는 쪽이 하나라도 있는"
-    // 모든 블록 쌍에 대해 불린다. 실제 칸 모서리(회전 포함)를 계산해 16쌍 SAT 검사를 하기 전에, 두 블록
-    // 원점이 서로 닿을 수 있는 범위(SUPPORT_BROADPHASE_MAX_BLOCK_EXTENT, IsCellSupported와 같은 이유로
-    // 유도한 값) 밖이면 곧바로 건너뛴다 — 탑이 커질수록 대부분의 쌍이 여기서 걸러진다.
-    Vector2 blockOrigin = block->GetRenderPosition();
-    Vector2 otherOrigin = other->GetRenderPosition();
-    if (std::fabs(blockOrigin.x - otherOrigin.x) > Constants::SUPPORT_BROADPHASE_MAX_BLOCK_EXTENT ||
-        std::fabs(blockOrigin.y - otherOrigin.y) > Constants::SUPPORT_BROADPHASE_MAX_BLOCK_EXTENT)
+    // [책임 분리] "겹쳤는지/어디를/얼마나 겹쳤는지"(SAT, 접촉 매니폴드)는 CollisionManager가 전담한다.
+    // 여기서는 그 판정 결과를 가지고 "그래서 어떻게 반응할지"(WakeUp 여부, 강체 충돌 임펄스)만 담당한다.
+    CollisionPair pair;
+    if (!CollisionManager::GetInstance().DetectPairCollision(block, other, pair))
     {
         return;
     }
 
     bool blockMovable = block->GetPhysicsState() == PhysicsState::Awake || block->GetPhysicsState() == PhysicsState::Toppling;
     bool otherMovable = other->GetPhysicsState() == PhysicsState::Awake || other->GetPhysicsState() == PhysicsState::Toppling;
-
-    // [Contact Manifold] 겹친 셀 쌍을 전부 모아둔다. 넓은 면 접촉에서는 여러 셀 쌍이 동시에 겹치는데,
-    // "가장 깊이 겹친 것" 하나만 쓰면 접촉면의 좌우 양 끝을 표현하지 못해 한쪽으로 치우친 토크가 생기고
-    // 그게 미세 회전(떨림)으로 반복된다. 일단 전부 모아뒀다가 아래에서 같은 방향(노멀)끼리 병합한다.
-    std::vector<CellCollisionResult> candidates;
-
-    for (int i = 0; i < block->GetCellCount(); ++i)
-    {
-        Vector2 cornersA[4];
-        block->GetCellRotatedCorners(i, cornersA);
-
-        for (int j = 0; j < other->GetCellCount(); ++j)
-        {
-            Vector2 cornersB[4];
-            other->GetCellRotatedCorners(j, cornersB);
-
-            CellCollisionResult collision = TestCellCollision(cornersA, cornersB);
-            if (collision.collided)
-            {
-                candidates.push_back(collision);
-            }
-        }
-    }
-
-    if (candidates.empty())
-    {
-        return;
-    }
-
-    // 가장 깊이 겹친 후보를 "대표 충돌"로 삼는다 — 위치 보정에 쓸 침투 깊이와, 아래 병합 기준이 될 노멀을 여기서 얻는다
-    CellCollisionResult bestCollision = candidates[0];
-    for (const CellCollisionResult& candidate : candidates)
-    {
-        if (candidate.penetration > bestCollision.penetration)
-        {
-            bestCollision = candidate;
-        }
-    }
-
-    // [Contact Manifold] 대표 노멀과 방향이 비슷한(거의 같은 면에서 생긴) 후보들의 접촉점만 모아서,
-    // 그중 접촉면을 따라(접선 방향으로) 가장 멀리 떨어진 두 점을 최종 접촉점 2개로 쓴다.
-    // 후보가 1개뿐(점 하나짜리 접촉)이면 min/max가 같은 셀의 두 점이 되어 예전과 동일하게 동작한다.
-    Vector2 tangent = { -bestCollision.normal.y, bestCollision.normal.x };
-    float minProjection = 999999.0f;
-    float maxProjection = -999999.0f;
-    Vector2 manifoldPoints[2] = { bestCollision.contactPoints[0], bestCollision.contactPoints[1] };
-
-    for (const CellCollisionResult& candidate : candidates)
-    {
-        float normalAlignment = candidate.normal.x * bestCollision.normal.x + candidate.normal.y * bestCollision.normal.y;
-        if (normalAlignment < 0.9f)
-        {
-            continue; // 방향이 많이 다른 접촉(예: 옆면과 밑면이 동시에 겹친 코너 케이스)은 이 manifold에 안 섞는다
-        }
-
-        for (int p = 0; p < 2; ++p)
-        {
-            Vector2 point = candidate.contactPoints[p];
-            float projection = point.x * tangent.x + point.y * tangent.y;
-
-            if (projection < minProjection)
-            {
-                minProjection = projection;
-                manifoldPoints[0] = point;
-            }
-            if (projection > maxProjection)
-            {
-                maxProjection = projection;
-                manifoldPoints[1] = point;
-            }
-        }
-    }
 
     bool blockIsRealImpact = block->GetSpeedSquared() > Constants::WAKE_IMPACT_SPEED_THRESHOLD * Constants::WAKE_IMPACT_SPEED_THRESHOLD;
     bool otherIsRealImpact = other->GetSpeedSquared() > Constants::WAKE_IMPACT_SPEED_THRESHOLD * Constants::WAKE_IMPACT_SPEED_THRESHOLD;
@@ -296,26 +214,27 @@ void PhysicsManager::ResolveBlockPairCollision(Block* block, Block* other)
         block->WakeUp();
         blockMovable = true; // 이제 block도 움직일 수 있게 되었으므로 true로 바꿔줌
     }
-    // [접촉 다각화] 가장 깊게 겹친 그 칸 쌍의 접촉점 2개에 대해서만 반응을 준다. 첫 번째 점만 위치
+
+    // [접촉 다각화] CollisionManager가 넘겨준 접촉점 2개에 대해서만 반응을 준다. 첫 번째 점만 위치
     // 보정을 하고(penetration 그대로), 두 번째 점은 이미 밀어낸 뒤라 penetration을 0으로 넘겨서
     // 속도/토크 반응만 추가로 준다 — 면과 면이 맞닿았을 때 양 끝을 동시에 붙잡아서 미세 회전(떨림)이 사라진다
     if (blockMovable && otherMovable)
     {
         // 둘 다 움직일 수 있으면 진짜 쌍방향 충돌
-        block->ResolveRigidCollisionWithBlock(other, manifoldPoints[0], bestCollision.normal, bestCollision.penetration);
-        block->ResolveRigidCollisionWithBlock(other, manifoldPoints[1], bestCollision.normal, 0.0f);
+        block->ResolveRigidCollisionWithBlock(other, pair.contactPoints[0], pair.normal, pair.penetration);
+        block->ResolveRigidCollisionWithBlock(other, pair.contactPoints[1], pair.normal, 0.0f);
     }
     else if (blockMovable)
     {
         // other는 Sleeping(고정) — block만 밀려남. normal이 이미 "other->block" 방향이라 그대로 씀
-        block->ResolveRigidCollision(manifoldPoints[0], bestCollision.normal, bestCollision.penetration);
-        block->ResolveRigidCollision(manifoldPoints[1], bestCollision.normal, 0.0f);
+        block->ResolveRigidCollision(pair.contactPoints[0], pair.normal, pair.penetration);
+        block->ResolveRigidCollision(pair.contactPoints[1], pair.normal, 0.0f);
     }
     else if (otherMovable)
     {
         // block이 Sleeping(고정) — other만 밀려남. other 입장에선 반대(block->other) 방향이 필요해서 뒤집는다
-        other->ResolveRigidCollision(manifoldPoints[0], bestCollision.normal * -1.0f, bestCollision.penetration);
-        other->ResolveRigidCollision(manifoldPoints[1], bestCollision.normal * -1.0f, 0.0f);
+        other->ResolveRigidCollision(pair.contactPoints[0], pair.normal * -1.0f, pair.penetration);
+        other->ResolveRigidCollision(pair.contactPoints[1], pair.normal * -1.0f, 0.0f);
     }
 }
 
@@ -358,123 +277,6 @@ void PhysicsManager::ResolveBlockCollisions()
     }
 }
 
-CellCollisionResult PhysicsManager::TestCellCollision(const Vector2 cornersA[4], const Vector2 cornersB[4]) const
-{
-    // SAT(분리축 정리): 두 볼록 도형이 안 겹친다면, 두 도형의 변 중 적어도 하나에 수직인 방향(축)으로
-    // 투영했을 때 두 도형의 투영 구간이 겹치지 않는 축이 반드시 존재한다.
-    // 반대로 모든 후보 축에서 투영이 겹친다면 두 도형은 실제로 겹쳐 있다는 뜻이다.
-    // 사각형은 마주보는 변끼리 평행이라 축은 실질적으로 2개씩(총 4개)이면 충분하지만,
-    // 코드를 단순하게 유지하려고 그냥 8개(양쪽 다 4변씩) 다 검사한다.
-    CellCollisionResult result;
-    float smallestOverlap = 999999.0f;
-    Vector2 smallestAxis = { 0.0f, 0.0f };
-
-    for (int shapeIndex = 0; shapeIndex < 2; ++shapeIndex)
-    {
-        const Vector2* corners = (shapeIndex == 0) ? cornersA : cornersB;
-
-        for (int edgeIndex = 0; edgeIndex < 4; ++edgeIndex)
-        {
-            Vector2 edgeStart = corners[edgeIndex];
-            Vector2 edgeEnd = corners[(edgeIndex + 1) % 4];
-            Vector2 edge = edgeEnd - edgeStart;
-
-            // 변을 90도 돌리면 그 변에 수직인 방향(분리축 후보)이 된다
-            Vector2 axis = { edge.y, -edge.x };
-            float axisLength = std::sqrt(axis.x * axis.x + axis.y * axis.y);
-            if (axisLength < 0.0001f)
-            {
-                continue;
-            }
-            axis = axis * (1.0f / axisLength);
-
-            float minA, maxA, minB, maxB;
-            ProjectCornersOntoAxis(cornersA, axis, minA, maxA);
-            ProjectCornersOntoAxis(cornersB, axis, minB, maxB);
-
-            float overlapEnd = maxA;
-            if (maxB < overlapEnd) overlapEnd = maxB;
-            float overlapStart = minA;
-            if (minB > overlapStart) overlapStart = minB;
-            float overlap = overlapEnd - overlapStart;
-
-            if (overlap <= 0.0f)
-            {
-                // 이 축에서 안 겹친다 = 분리축 발견 = 두 사각형은 충돌하지 않는다 (result.collided는 기본값 false)
-                return result;
-            }
-
-            if (overlap < smallestOverlap)
-            {
-                smallestOverlap = overlap;
-                smallestAxis = axis;
-            }
-        }
-    }
-
-    // 모든 축에서 겹쳤다 = 충돌. 겹침이 가장 작은 축이 "밀어내야 할 방향"(최소 이동 벡터)이 된다
-    result.collided = true;
-    result.penetration = smallestOverlap;
-
-    // normal은 항상 "B에서 A를 향하는 방향"으로 통일한다 (Block::ResolveRigidCollision 계열이 이 규약을 전제로 함)
-    Vector2 centerA = ComputeQuadCenter(cornersA);
-    Vector2 centerB = ComputeQuadCenter(cornersB);
-    Vector2 aFromB = centerA - centerB;
-    float dot = aFromB.x * smallestAxis.x + aFromB.y * smallestAxis.y;
-    result.normal = (dot < 0.0f) ? smallestAxis * -1.0f : smallestAxis;
-
-    // [접촉 다각화] B의 꼭짓점 4개를 normal 방향(=A가 있는 쪽)으로 얼마나 깊이 들어갔는지 기준으로 정렬해서,
-    // 가장 깊은 2개를 접촉점으로 삼는다. 면과 면이 맞닿은 경우 이 2개가 정확히 겹치는 변의 양 끝이 되고,
-    // 꼭짓점 하나만 닿는 경우엔 자연히 2개가 (거의) 같은 자리를 가리키게 된다
-    float bestProjection = -999999.0f;
-    float secondProjection = -999999.0f;
-    int bestIndex = 0;
-    int secondIndex = 0;
-
-    for (int i = 0; i < 4; ++i)
-    {
-        float projection = cornersB[i].x * result.normal.x + cornersB[i].y * result.normal.y;
-        if (projection > bestProjection)
-        {
-            secondProjection = bestProjection;
-            secondIndex = bestIndex;
-            bestProjection = projection;
-            bestIndex = i;
-        }
-        else if (projection > secondProjection)
-        {
-            secondProjection = projection;
-            secondIndex = i;
-        }
-    }
-
-    result.contactPoints[0] = cornersB[bestIndex];
-    result.contactPoints[1] = cornersB[secondIndex];
-
-    return result;
-}
-
-void PhysicsManager::ProjectCornersOntoAxis(const Vector2 corners[4], Vector2 axis, float& outMin, float& outMax) const
-{
-    outMin = corners[0].x * axis.x + corners[0].y * axis.y;
-    outMax = outMin;
-    for (int i = 1; i < 4; ++i)
-    {
-        float projection = corners[i].x * axis.x + corners[i].y * axis.y;
-        if (projection < outMin) outMin = projection;
-        if (projection > outMax) outMax = projection;
-    }
-}
-
-Vector2 PhysicsManager::ComputeQuadCenter(const Vector2 corners[4]) const
-{
-    Vector2 sum = { 0.0f, 0.0f };
-    for (int i = 0; i < 4; ++i)
-    {
-        sum += corners[i];
-    }
-    return sum * 0.25f;
-}
 void PhysicsManager::GetCellSupportBounds(Block* block, int cellIndex, float& outTopY, float& outBottomY, float& outMinX, float& outMaxX) const
 {
     Vector2 corners[4];
@@ -510,6 +312,23 @@ bool PhysicsManager::IsCellSupported(Block* block, int cellIndex) const
     bool isOverFloorPlatform = cellCenterX > Constants::FLOOR_LEFT_X && cellCenterX < Constants::FLOOR_RIGHT_X;
     if (isNearFloorHeight && isOverFloorPlatform)
     {
+        // [임시 디버그 - 왜 허공에서 Sleeping인지 조사용]
+        if (block->GetPhysicsState() == PhysicsState::Sleeping)
+        {
+            static int floorLogCount = 0;
+            if (floorLogCount < 50)
+            {
+                FILE* file = nullptr;
+                fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
+                if (file != nullptr)
+                {
+                    std::fprintf(file, "[IsCellSupported/FLOOR] block=%p cell=%d cellBottomY=%.1f cellCenterX=%.1f floorTopY=%.1f\n",
+                        block, cellIndex, cellBottomY, cellCenterX, Constants::FLOOR_TOP_Y);
+                    std::fclose(file);
+                }
+                ++floorLogCount;
+            }
+        }
         return true;
     }
 
@@ -545,6 +364,78 @@ bool PhysicsManager::IsCellSupported(Block* block, int cellIndex) const
                 cellBottomY <= otherTopY + Constants::SUPPORT_CHECK_TOLERANCE;
 
             if (centerOverlapsOther && isRestingOnOther)
+            {
+                // [임시 디버그 - 왜 허공에서 Sleeping인지 조사용]
+                if (block->GetPhysicsState() == PhysicsState::Sleeping)
+                {
+                    static int blockLogCount = 0;
+                    if (blockLogCount < 50)
+                    {
+                        FILE* file = nullptr;
+                        fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
+                        if (file != nullptr)
+                        {
+                            std::fprintf(file,
+                                "[IsCellSupported/BLOCK] block=%p cell=%d cellBottomY=%.1f cellCenterX=%.1f "
+                                "other=%p otherState=%d otherCell=%d otherTopY=%.1f otherMinX=%.1f otherMaxX=%.1f\n",
+                                block, cellIndex, cellBottomY, cellCenterX,
+                                other, static_cast<int>(other->GetPhysicsState()), j, otherTopY, otherMinX, otherMaxX);
+                            std::fclose(file);
+                        }
+                        ++blockLogCount;
+                    }
+                }
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool PhysicsManager::IsCellTouchingAnySupport(Block* block, int cellIndex) const
+{
+    float cellTopY = 0.0f;
+    float cellBottomY = 0.0f;
+    float cellMinX = 0.0f;
+    float cellMaxX = 0.0f;
+    GetCellSupportBounds(block, cellIndex, cellTopY, cellBottomY, cellMinX, cellMaxX);
+
+    // [마찰 사각지대 방지] IsCellSupported와 달리 "중심이 그 위에 있는지"가 아니라 "칸의 X범위가
+    // 조금이라도 겹치는지"만 본다 — 모서리로만 걸친 접촉에도 마찰이 걸리게 하려는 것.
+    bool isNearFloorHeight = cellBottomY >= Constants::FLOOR_TOP_Y - Constants::SUPPORT_CHECK_TOLERANCE &&
+        cellBottomY <= Constants::FLOOR_TOP_Y + Constants::SUPPORT_CHECK_TOLERANCE;
+    bool overlapsFloorPlatform = cellMaxX > Constants::FLOOR_LEFT_X && cellMinX < Constants::FLOOR_RIGHT_X;
+    if (isNearFloorHeight && overlapsFloorPlatform)
+    {
+        return true;
+    }
+
+    for (Block* other : BlockManager::GetInstance().GetAllBlocks())
+    {
+        bool otherCanSupport = other != block &&
+            other->GetPhysicsState() != PhysicsState::Airborne &&
+            other->GetPhysicsState() != PhysicsState::Toppling;
+        if (!otherCanSupport)
+        {
+            continue;
+        }
+
+        if (std::fabs(other->GetRenderPosition().y - cellBottomY) > Constants::SUPPORT_BROADPHASE_MAX_BLOCK_EXTENT)
+        {
+            continue;
+        }
+
+        for (int j = 0; j < other->GetCellCount(); ++j)
+        {
+            float otherTopY = 0.0f, otherBottomY = 0.0f, otherMinX = 0.0f, otherMaxX = 0.0f;
+            GetCellSupportBounds(other, j, otherTopY, otherBottomY, otherMinX, otherMaxX);
+
+            bool overlapsOther = cellMaxX > otherMinX && cellMinX < otherMaxX;
+            bool isTouchingOther = cellBottomY >= otherTopY - Constants::SUPPORT_CHECK_TOLERANCE &&
+                cellBottomY <= otherTopY + Constants::SUPPORT_CHECK_TOLERANCE;
+
+            if (overlapsOther && isTouchingOther)
             {
                 return true;
             }
@@ -707,17 +598,48 @@ void PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::un
 		{
 			block->WakeUp();
 		}
-        
+
         return;
+    }
+
+    // [임시 디버그 - 왜 안 넘어지는지 조사용] 처음 300번 호출까지만 supportMinX/MaxX/centerOfMassX를 파일로 남긴다.
+    {
+        static int logCount = 0;
+        if (logCount < 300)
+        {
+            FILE* file = nullptr;
+            fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
+            if (file != nullptr)
+            {
+                std::fprintf(file, "[ResolveBalance] block=%p supportMinX=%.1f supportMaxX=%.1f centerOfMassX=%.1f imbalance=%.1f\n",
+                    block, supportMinX, supportMaxX, centerOfMassX,
+                    centerOfMassX < supportMinX ? centerOfMassX - supportMinX : (centerOfMassX > supportMaxX ? centerOfMassX - supportMaxX : 0.0f));
+                std::fclose(file);
+            }
+            ++logCount;
+        }
     }
 
     // [트리키 타워 붕괴 판정]
     // 서서히 각도를 기울이는 기존 ApplyBalanceTorque 방식 대신,
     // 무게중심이 지지대를 벗어나는 '즉시' Toppling 상태로 만들고 강한 회전력을 줍니다.
-    // IMBALANCE_DEADZONE만큼은 그냥 넘어가서, 부동소수점/물리 계산 오차 수준의 미세한 초과로는
-    // 안정적인 구조까지 하드 스핀이 걸려 떨리며 무너지는 일이 없게 한다.
-    if (centerOfMassX < supportMinX - Constants::IMBALANCE_DEADZONE || centerOfMassX > supportMaxX + Constants::IMBALANCE_DEADZONE)
+    // [칼날 위 균형 방지] 가장자리를 넘어야(구식) 불안정으로 보는 대신, 가장자리에서 안쪽으로
+    // IMBALANCE_DEADZONE만큼도 못 들어와 있으면(가장자리에 걸치기만 해도) 불안정으로 본다 —
+    // 지지 칸이 하나뿐이고 무게중심이 그 가장자리에 정확히 걸리는 칼날 위 균형(예: S자를 세로로 세워
+    // 모서리 하나로만 받치는 경우)까지 "가장자리를 안 넘었으니 안정"으로 영원히 통과하는 걸 막는다.
+    if (centerOfMassX < supportMinX + Constants::IMBALANCE_DEADZONE || centerOfMassX > supportMaxX - Constants::IMBALANCE_DEADZONE)
     {
+        // [무한 재넘어짐 방지] 옆 블록 등에 막혀서 실제로는 못 넘어가는 블록은, SettleToppledBlocks가
+        // Awake로 돌려보내자마자 여기서 곧바로 다시 imbalance로 판정돼 BeginToppling이 반복된다 —
+        // 매번 새 TUMBLE_ANGULAR_VELOCITY와 새 피벗 고정이 걸리면서 제자리에서 계속 진동(퉁퉁 튀는
+        // 것처럼 보임)한다. Sleep 없이 이 재넘어짐이 MAX_CONSECUTIVE_TOPPLE_COUNT번을 넘으면, 물리적으로
+        // 완전히 안정된 상태가 아니어도 그 자리에서 강제로 멈춰서 무한 진동을 끊는다.
+        if (block->GetConsecutiveToppleCount() >= Constants::MAX_CONSECUTIVE_TOPPLE_COUNT)
+        {
+            block->ForceStabilize();
+            return;
+        }
+
         // 무게중심이 빠진 방향으로 순간적인 각속도 부여 (휙! 넘어감)
         // Constants::TUMBLE_ANGULAR_VELOCITY로 세기를 조절할 수 있다.
         // [화면 좌표계(Y 아래로 증가) 기준] RotateLocalPointToWorld의 회전 공식으로는 양수 각도가
@@ -753,8 +675,20 @@ void PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::un
         // 직접 건드리지 않는다: IsCellSupported가 Toppling 블록을 지지 제공자로 인정하지 않으므로, 다음
         // 물리 스텝에 그 블록들이 각자 자기 지지 판정에서 "지지를 잃었다"를 스스로 감지해 개별적으로
         // 깨어나고(Sleeping->Awake) 자연스러운 충돌로 무너진다.
+        // [재넘어짐 킥 중복 방지] 옆 블록 등에 막혀서 완전히 못 넘어가고 "살짝 넘어짐 → 피벗 고정으로
+        // 거의 원위치 복귀 → 그런데 무게중심은 여전히 살짝 벗어나 있어서 다음 프레임에 또 imbalance 판정"이
+        // 반복될 수 있다. 이때마다 TUMBLE_ANGULAR_VELOCITY를 처음부터 다시 꽂아 넣으면, 이미 있던(자연스러운)
+        // 각속도 위에 매번 인위적인 순간 가속이 덧붙어서 화면에는 계속 "팍! 팍!" 튀는 것처럼 보인다.
+        // 첫 넘어짐(GetConsecutiveToppleCount()==0, 이번 BeginToppling 호출로 1이 됨)에만 킥을 주고,
+        // 재시도부터는 이미 진행 중인 회전에 맡긴다 — 실제로 넘어가는 중이면 그대로 이어지고, 막혀서
+        // 멈춰 있으면(각속도 0에 가까움) MAX_CONSECUTIVE_TOPPLE_COUNT에 도달해 ForceStabilize가 정리한다.
+        bool isFirstTopple = block->GetConsecutiveToppleCount() == 0;
+
         block->BeginToppling();
-        block->AddAngularVelocity(tumbleSpin);
+        if (isFirstTopple)
+        {
+            block->AddAngularVelocity(tumbleSpin);
+        }
         block->SetTopplePivot({ pivotX, pivotY });
     }
 }
@@ -824,7 +758,7 @@ void PhysicsManager::RemoveToppledBlocks()
         }
     }
 }
-void PhysicsManager::SettleToppledBlocks()
+void PhysicsManager::SettleToppledBlocks(const std::unordered_map<Block*, std::vector<Block*>>& childrenOf)
 {
     for (Block* block : BlockManager::GetInstance().GetAllBlocks())
     {
@@ -858,9 +792,34 @@ void PhysicsManager::SettleToppledBlocks()
             }
         }
 
-        if (hasSupport)
+        LogSettleAttempt(block, hasSupport); // [임시 디버그]
+
+        if (!hasSupport)
         {
-            block->Sleep();
+            continue;
+        }
+
+        // [진짜 원인 수정] "칸 하나라도 지지됨"만으로 Awake로 돌려보내면, 회전하며 넘어지는 도중 다른
+        // 모서리가 바닥에 잠깐 스치기만 해도 매번 여기 걸려서 Awake로 튕겨나갔다가, 바로 다음 스텝
+        // ResolveBalance가 결합 무게중심을 보고 다시 넘어뜨리는 게 반복된다 — 진짜 넘어지는 중인 블록의
+        // 낙하가 계속 끊기고(눈에는 "재넘어짐"으로 보임), 결국 MAX_CONSECUTIVE_TOPPLE_COUNT에 걸려
+        // 넘어져야 할 자세 그대로 ForceStabilize에 얼어붙는 원인이었다. 그래서 ResolveBalance와 완전히
+        // 같은 기준(결합 무게중심이 지지 범위 안쪽으로 IMBALANCE_DEADZONE만큼 여유가 있는지)까지 확인해서,
+        // 진짜로 안정된 경우에만 Awake로 돌려보낸다 — 아직 불안정하면 Toppling 상태를 그대로 유지해서
+        // 실제 물리(중력+충돌)로 자연스럽게 계속 넘어지게 둔다.
+        float supportMinX = 0.0f;
+        float supportMaxX = 0.0f;
+        float centerOfMassX = 0.0f;
+        if (!ComputeSupportDebugInfo(block, childrenOf, supportMinX, supportMaxX, centerOfMassX))
+        {
+            continue;
+        }
+
+        bool isBalanced = centerOfMassX >= supportMinX + Constants::IMBALANCE_DEADZONE &&
+            centerOfMassX <= supportMaxX - Constants::IMBALANCE_DEADZONE;
+        if (isBalanced)
+        {
+            block->WakeUp();
         }
     }
 }
@@ -891,6 +850,17 @@ void PhysicsManager::TrySleepAll(float deltaTime)
         if (!canRest)
         {
             block->ResetRestTimer();
+
+            // [강제 취침 타임아웃] 지지대는 있는데 미세한 진동 때문에 속도가 SLEEP 임계값을 계속
+            // 살짝살짝 넘나들면, 위의 정상 경로(rest timer가 SLEEP_DELAY만큼 안 끊기고 유지)로는
+            // 영원히 잠들 수 없다 — 눈에는 거의 멈춘 것처럼 보이는데 계속 Awake로 남는 경우가 이거다.
+            // m_activeTimer(Land()/BeginToppling() 이후 경과 시간, Sleep<->Wake 반복에도 안 끊김)가
+            // FORCE_SLEEP_TIMEOUT을 넘으면 속도와 무관하게 강제로 안정화한다.
+            if (hasSupport && block->GetActiveTimer() >= Constants::FORCE_SLEEP_TIMEOUT)
+            {
+                block->ForceStabilize();
+            }
+
             continue;
         }
 
@@ -898,6 +868,9 @@ void PhysicsManager::TrySleepAll(float deltaTime)
 
         if (block->GetRestTimer() >= Constants::SLEEP_DELAY)
         {
+            // [무한 재넘어짐 방지] 여기가 "진짜로 안정돼서 스스로 잠들었다"고 확인된 유일한 경로다
+            // (지지대 있음 + 저속 상태가 SLEEP_DELAY 동안 유지됨) — 재넘어짐 카운트를 여기서만 리셋한다.
+            block->ResetConsecutiveToppleCount();
             block->Sleep();
         }
     }

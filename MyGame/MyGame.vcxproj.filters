@@ -102,6 +102,9 @@
     <ClInclude Include="src\managers\ResourceManager.h">
       <Filter>src\managers</Filter>
     </ClInclude>
+    <ClInclude Include="src\managers\SoundManager.h">
+      <Filter>src\managers</Filter>
+    </ClInclude>
     <ClInclude Include="src\managers\RenderManager.h">
       <Filter>src\managers</Filter>
     </ClInclude>
@@ -111,7 +114,7 @@
     <ClInclude Include="src\collision\Collider.h">
       <Filter>src\collision</Filter>
     </ClInclude>
-    <ClInclude Include="src\collision\AABBCollider.h">
+    <ClInclude Include="src\collision\OBBCollider.h">
       <Filter>src\collision</Filter>
     </ClInclude>
     <ClInclude Include="src\objects\Block.h">
@@ -188,13 +191,16 @@
     <ClCompile Include="src\managers\ResourceManager.cpp">
       <Filter>src\managers</Filter>
     </ClCompile>
+    <ClCompile Include="src\managers\SoundManager.cpp">
+      <Filter>src\managers</Filter>
+    </ClCompile>
     <ClCompile Include="src\managers\RenderManager.cpp">
       <Filter>src\managers</Filter>
     </ClCompile>
     <ClCompile Include="src\managers\UIManager.cpp">
       <Filter>src\managers</Filter>
     </ClCompile>
-    <ClCompile Include="src\collision\AABBCollider.cpp">
+    <ClCompile Include="src\collision\OBBCollider.cpp">
       <Filter>src\collision</Filter>
     </ClCompile>
     <ClCompile Include="src\objects\Block.cpp">

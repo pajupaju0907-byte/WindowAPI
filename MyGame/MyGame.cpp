@@ -6,6 +6,7 @@
 #include "framework.h"
 #include "MyGame.h"
 #include "src/managers/ResourceManager.h"
+#include "src/managers/SoundManager.h"
 #include "src/core/WindowManager.h"
 #include "src/core/SceneManager.h"
 #include <cstdlib>
@@ -41,6 +42,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     // Direct2D 비트맵(ComPtr)들이 프로세스 종료 전에, COM이 아직 살아있는 상태에서 해제되도록
     // 명시적으로 정리한다
     ResourceManager::GetInstance().Shutdown();
+    SoundManager::GetInstance().Shutdown();
 
     CoUninitialize();
     return result;

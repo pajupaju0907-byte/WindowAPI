@@ -119,7 +119,12 @@ namespace Constants
 	// 무게중심 판정에서, 바닥/다른 블럭 바로 위에 얹혀 있다고 인정할 허용 오차(px)
 	constexpr float SUPPORT_CHECK_TOLERANCE = 4.0f;
 
-	// 무게중심이 지지 범위를 이 정도(px) 넘게 벗어나야 "불안정"으로 판단하는 여유값(오차 무시용)
+	// [안정 판정 - 안쪽 여유] 무게중심이 지지 범위 "안쪽"으로 이 정도(px)는 들어와 있어야 진짜 안정으로
+	// 인정한다. 예전엔 반대 방향(가장자리를 이만큼 넘어야 불안정)으로 썼는데, 그러면 무게중심이 지지
+	// 칸의 가장자리에 정확히(0px 초과) 걸친 칼날 위 균형 상태(예: S자를 세로로 세워 한쪽 모서리 하나로
+	// 받치는 경우)가 "가장자리를 안 넘었으니 안정"으로 영원히 통과해버렸다 — 실제로는 이런 경우 아주 작은
+	// 오차에도 한쪽으로 넘어가야 정상이다. 가장자리에서 이 값만큼 안쪽까지를 "불안정 지대"로 잡아서
+	// 해결한다. 값을 넉넉히 벌린 지지 기반(여러 칸)에서는 무게중심이 보통 훨씬 안쪽에 있어서 영향이 없다.
 	constexpr float IMBALANCE_DEADZONE = 2.0f;
 
 	// [강제 취침 타임아웃] 지지대가 있는 블럭이 미세한 진동 때문에 속도가 계속 임계값을 살짝 넘나들어
@@ -166,6 +171,11 @@ namespace Constants
 	// 붕 뜨는 것처럼 보이는데(실제 도미노는 접촉 모서리가 축이라 안 그럼), 이 시간 동안만 접촉 모서리를
 	// 고정해서 그 부자연스러움을 없앤다. 이후엔 자연스럽게 자유낙하로 넘어간다.
 	constexpr float TOPPLE_PIVOT_LOCK_DURATION = 0.15f;
+
+	// [무한 재넘어짐 방지] 옆 블록 등에 막혀서 실제로는 못 넘어가는 블록이 Sleep 없이 이만큼 연속으로
+	// BeginToppling되면(Awake로 잠깐 돌아왔다가 ResolveBalance가 곧바로 또 넘어뜨리는 걸 반복하면),
+	// 물리적으로 완전히 정확한 상태는 아니어도 그 자리에서 강제로 멈춰(ForceStabilize) 무한 진동을 끊는다.
+	constexpr int MAX_CONSECUTIVE_TOPPLE_COUNT = 5;
 
 	// 무게중심이 이 각도(도)까지 기울면 더 못 버티고 완전히 무너지는 것으로 확정한다 (Awake -> Toppling 전환).
 	// 각속도가 보조 토크에서 왔든 실제 충돌에서 왔든 상관없이, 이 각도를 넘으면 무조건 여기서 걸린다 —
@@ -247,7 +257,7 @@ namespace Constants
 	constexpr float GAME_OVER_DROP_SETTLE_SPEED = 40.0f;
 
 	constexpr float GAME_OVER_SCORE_CENTER_Y = WINDOW_HEIGHT * 0.5f;
-	constexpr float GAME_OVER_BUTTON_CENTER_Y = WINDOW_HEIGHT * 0.7f;
+	constexpr float GAME_OVER_BUTTON_CENTER_Y = WINDOW_HEIGHT * 0.62f;
 
 	// [타이틀 화면] 시작 버튼 중심의 세로 위치(화면 좌표, px). 가로는 항상 창 가운데(WINDOW_WIDTH/2)로 고정.
 	// Option/Ranking(비활성)은 이 값 기준으로 버튼 한 칸 높이씩 아래로 이어 붙는다(GetOptionButtonCenter 등 참고)
@@ -325,4 +335,34 @@ namespace Constants
 	constexpr float HEIGHT_RECORD_PANEL_WIDTH = 200.0f;
 	// 배경판 위아래로 글자 크기 기준으로 남길 여백(px)
 	constexpr float HEIGHT_RECORD_PANEL_PADDING = 16.0f;
+
+	// [타이틀 화면 - 옵션 패널] Option 버튼을 누르면 뜨는 볼륨 조절 오버레이. 화면 중앙에 뜬다
+	constexpr float OPTION_PANEL_CENTER_Y = WINDOW_HEIGHT * 0.5f;
+	constexpr float OPTION_PANEL_WIDTH = TILE_SIZE * 9.0f;
+	constexpr float OPTION_PANEL_HEIGHT = TILE_SIZE * 3.5f;
+	constexpr COLORREF OPTION_PANEL_BACKGROUND_COLOR = RGB(20, 20, 30);
+	constexpr float OPTION_PANEL_BACKGROUND_OPACITY = 0.9f;
+	// 패널 왼쪽 끝에서 스피커 아이콘까지, 스피커 아이콘에서 첫 볼륨 바까지 남길 여백(px)
+	constexpr float OPTION_PANEL_PADDING_X = 28.0f;
+	// 볼륨 바들의 공통 바닥선을 패널 아래쪽 끝에서 얼마나 띄울지(px)
+	constexpr float OPTION_PANEL_BAR_BOTTOM_MARGIN = 28.0f;
+
+	// [볼륨 바] 칸 5개, 칸당 20%(=1/VOLUME_BAR_COUNT). 왼쪽부터 오른쪽으로 갈수록
+	// VOLUME_BAR_HEIGHT_STEP씩 계단식으로 높아진다(참고 이미지와 동일한 모양).
+	// 칸을 클릭하면 그 칸까지(1~5번째) 볼륨이 채워진다.
+	constexpr int VOLUME_BAR_COUNT = 5;
+	constexpr float VOLUME_BAR_STEP = 1.0f / VOLUME_BAR_COUNT;
+	constexpr float VOLUME_BAR_WIDTH = 26.0f;
+	constexpr float VOLUME_BAR_GAP = 14.0f;
+	constexpr float VOLUME_BAR_MIN_HEIGHT = 26.0f;
+	constexpr float VOLUME_BAR_HEIGHT_STEP = 18.0f;
+	// 현재 볼륨보다 뒤(꺼진) 칸을 흐리게 표시할 불투명도
+	constexpr float VOLUME_BAR_DIM_OPACITY = 0.25f;
+
+	// [스피커 아이콘] 볼륨 바 왼쪽에 그리는 스피커 모양(사각 몸통 + 세모 콘) 크기/색
+	constexpr float SPEAKER_ICON_BODY_WIDTH = 12.0f;
+	constexpr float SPEAKER_ICON_BODY_HEIGHT = 16.0f;
+	constexpr float SPEAKER_ICON_CONE_WIDTH = 14.0f;
+	constexpr float SPEAKER_ICON_CONE_HEIGHT = 26.0f;
+	constexpr COLORREF SPEAKER_ICON_COLOR = RGB(250, 200, 60);
 }

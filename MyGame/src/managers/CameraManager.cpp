@@ -27,7 +27,7 @@ void CameraManager::UpdateTarget(const std::vector<Block*>& blocks)
             continue;
         }
 
-        float blockY = block->GetRenderPosition().y;
+        float blockY = block->GetWorldBounds().min.y;
         if (!hasStackedBlock || blockY < highestBlockY)
         {
             highestBlockY = blockY;

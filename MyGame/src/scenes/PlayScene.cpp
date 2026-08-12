@@ -5,6 +5,7 @@
 #include "../managers/RenderManager.h"
 #include "../managers/CameraManager.h"
 #include "../managers/BlockManager.h"
+#include "../managers/SoundManager.h"
 #include "../objects/Block.h"
 #include "../util/Constants.h"
 #include "../util/Types.h"
@@ -24,6 +25,8 @@ void PlayScene::Enter()
     ResourceManager::GetInstance().LoadSprite("assets/bottomleft.png");
     ResourceManager::GetInstance().LoadSprite("assets/bottomcenter.png");
     ResourceManager::GetInstance().LoadSprite("assets/bottomright.png");
+
+    SoundManager::GetInstance().PlayBgm("assets/Sound/IlliyardMoor.mp3");
 
     // 낙하 테스트용 스폰 (임시 - 실제 스폰 규칙/다음 블럭 큐 등은 별도로 직접 설계할 것)
     BlockManager::GetInstance().SpawnBlock(BlockType::Tetromino);
