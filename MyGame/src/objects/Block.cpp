@@ -388,6 +388,11 @@ const std::string& Block::GetSpriteId() const
 	return m_spriteId;
 }
 
+int Block::GetColorSlotIndex() const
+{
+	return m_colorSlotIndex;
+}
+
 float Block::GetMass() const
 {
 	return m_mass;

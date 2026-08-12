@@ -34,6 +34,7 @@ public:
 	/// @param renderTarget WM_PAINT에서 얻은 Direct2D 렌더타겟
 	void DrawFps(ID2D1RenderTarget* renderTarget);
 	void DrawHeightRecord(ID2D1RenderTarget* renderTarget, float heightMeters);
+	void DrawScorePanel(ID2D1RenderTarget* renderTarget, Vector2 center, float heightMeters);\
 
 	/// @brief 모든 블럭의 칸(cell)마다 실제 충돌 판정에 쓰이는 회전된 사각형(콜라이더)을 빨간 테두리로 그린다 (디버그용).
 	/// @param renderTarget WM_PAINT에서 얻은 Direct2D 렌더타겟

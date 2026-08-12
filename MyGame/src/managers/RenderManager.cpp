@@ -107,7 +107,7 @@ void RenderManager::Render(ID2D1RenderTarget* renderTarget)
 
 void RenderManager::DrawFps(ID2D1RenderTarget* renderTarget)
 {
-	int fps = static_cast<int>(TimeManager::GetInstance().GetFPS());
+	int fps = static_cast<int>(std::lround(TimeManager::GetInstance().GetFPS()));
 	std::string fpsText = "FPS: " + std::to_string(fps);
 	std::wstring wideFpsText(fpsText.begin(), fpsText.end());
 
@@ -138,6 +138,35 @@ void RenderManager::DrawHeightRecord(ID2D1RenderTarget* renderTarget, float heig
 	D2D1_RECT_F layoutRect = D2D1::RectF(
 		0.0f, static_cast<float>(Constants::FPS_TEXT_MARGIN),
 		static_cast<float>(Constants::WINDOW_WIDTH), static_cast<float>(Constants::FPS_TEXT_MARGIN) + panelHeight);
+
+	renderTarget->DrawText(wideText.c_str(), static_cast<UINT32>(wideText.length()), GetOrCreateCenteredTextFormat(), layoutRect, textBrush.Get());
+}
+void RenderManager::DrawScorePanel(ID2D1RenderTarget* renderTarget, Vector2 center, float heightMeters)
+{
+	char text[64];
+	std::snprintf(text, sizeof(text), "SCORE : %.1fm", heightMeters);
+	std::wstring wideText(text, text + std::strlen(text));
+
+	float panelHeight = Constants::HEIGHT_RECORD_FONT_SIZE + Constants::HEIGHT_RECORD_PANEL_PADDING;
+
+	// 글자 폭을 실제로 재서 그 폭 + 여백만큼만 패널을 채운다
+	Microsoft::WRL::ComPtr<IDWriteTextLayout> textLayout;
+	WindowManager::GetInstance().GetWriteFactory()->CreateTextLayout(
+		wideText.c_str(), static_cast<UINT32>(wideText.length()), GetOrCreateCenteredTextFormat(),
+		static_cast<float>(Constants::WINDOW_WIDTH), panelHeight, textLayout.GetAddressOf());
+
+	DWRITE_TEXT_METRICS metrics{};
+	textLayout->GetMetrics(&metrics);
+	float panelWidth = metrics.width + Constants::HEIGHT_RECORD_PANEL_PADDING * 2.0f;
+
+	FillRect(renderTarget, center, { panelWidth, panelHeight }, Constants::HEIGHT_RECORD_BACKGROUND_COLOR, Constants::HEIGHT_RECORD_BACKGROUND_OPACITY);
+
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+	renderTarget->CreateSolidColorBrush(ToColorF(Constants::HEIGHT_RECORD_TEXT_COLOR), textBrush.GetAddressOf());
+
+	D2D1_RECT_F layoutRect = D2D1::RectF(
+		0.0f, center.y - panelHeight / 2.0f,
+		static_cast<float>(Constants::WINDOW_WIDTH), center.y + panelHeight / 2.0f);
 
 	renderTarget->DrawText(wideText.c_str(), static_cast<UINT32>(wideText.length()), GetOrCreateCenteredTextFormat(), layoutRect, textBrush.Get());
 }

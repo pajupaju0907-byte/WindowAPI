@@ -111,6 +111,10 @@ public:
 	AABB GetWorldBounds() const;
 	const std::string& GetSpriteId() const;
 
+	// Block.png(색깔별 정사각형이 가로로 이어진 시트)에서 이 블럭이 쓸 칸의 인덱스(0부터).
+	// 파생 클래스 생성자가 셋팅하며, 렌더링(PlayScene)이 이 값으로 잘라낼 소스 사각형을 계산한다.
+	int GetColorSlotIndex() const;
+
 	// 질량 상관없이 같은 중력 가속도를 주려면, 힘을 걸 때 질량을 곱해줘야 해서 필요 (F=ma에서 a를 고정하려는 것)
 	float GetMass() const;
 
@@ -209,4 +213,5 @@ protected:
 	PhysicsState m_physicsState = PhysicsState::Airborne;
 	std::unique_ptr<Collider> m_collider;
 	std::string m_spriteId;
+	int m_colorSlotIndex = 0;
 };

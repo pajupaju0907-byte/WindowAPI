@@ -13,15 +13,10 @@
 #include "../core/SceneManager.h"
 void PlayScene::Enter()
 {
-    // TODO: 카메라 등 나머지 플레이 상태 초기화 직접 구현
+	BlockManager::GetInstance().Reset();
+	CameraManager::GetInstance().ResetCamera();
 
-    ResourceManager::GetInstance().LoadSprite("assets/block1.png");
-    ResourceManager::GetInstance().LoadSprite("assets/block2.png");
-    ResourceManager::GetInstance().LoadSprite("assets/block3.png");
-    ResourceManager::GetInstance().LoadSprite("assets/block4.png");
-    ResourceManager::GetInstance().LoadSprite("assets/block5.png");
-    ResourceManager::GetInstance().LoadSprite("assets/block6.png");
-    ResourceManager::GetInstance().LoadSprite("assets/block7.png");
+    ResourceManager::GetInstance().LoadSprite("assets/BlockT.png");
     ResourceManager::GetInstance().LoadSprite("assets/background.png");
     ResourceManager::GetInstance().LoadSprite("assets/topleft.png");
     ResourceManager::GetInstance().LoadSprite("assets/topcenter.png");
@@ -154,6 +149,13 @@ void PlayScene::RenderDeathZones(ID2D1RenderTarget* renderTarget)
     RenderManager::GetInstance().FillRect(renderTarget, rightScreenCenter, { rightWidth, zoneHeight }, Constants::DEATH_ZONE_COLOR, Constants::DEATH_ZONE_OPACITY);
 }
 
+D2D1_RECT_F PlayScene::GetBlockColorSourceRect(int slotIndex) const
+{
+    float left = Constants::BLOCK_COLOR_SHEET_CONTENT_LEFT + Constants::BLOCK_COLOR_SHEET_SLOT_WIDTH * static_cast<float>(slotIndex);
+    float top = Constants::BLOCK_COLOR_SHEET_CONTENT_TOP;
+    return D2D1::RectF(left, top, left + Constants::BLOCK_COLOR_SHEET_SLOT_WIDTH, top + Constants::BLOCK_COLOR_SHEET_SLOT_HEIGHT);
+}
+
 void PlayScene::Render(ID2D1RenderTarget* renderTarget)
 {
     RenderBackground(renderTarget);
@@ -163,10 +165,11 @@ void PlayScene::Render(ID2D1RenderTarget* renderTarget)
     for (Block* block : BlockManager::GetInstance().GetAllBlocks())
     {
         const SpriteInfo& blockSprite = ResourceManager::GetInstance().GetSpriteInfo(block->GetSpriteId());
+        D2D1_RECT_F colorSourceRect = GetBlockColorSourceRect(block->GetColorSlotIndex());
         for (int cellIndex = 0; cellIndex < block->GetCellCount(); ++cellIndex)
         {
             Vector2 cellScreenCenter = CameraManager::GetInstance().WorldToScreen(block->GetCellCenterRotated(cellIndex));
-            RenderManager::GetInstance().DrawSpriteRotated(renderTarget, blockSprite, cellScreenCenter, { Constants::TILE_SIZE, Constants::TILE_SIZE }, block->GetAngle(), 0);
+            RenderManager::GetInstance().DrawSpriteRotated(renderTarget, blockSprite, cellScreenCenter, { Constants::TILE_SIZE, Constants::TILE_SIZE }, block->GetAngle(), 0, 1.0f, &colorSourceRect);
         }
     }
 

@@ -41,6 +41,7 @@ public:
 
     // [데스 판정] 블럭이 데스존(CheckDeathZone)에 닿았으면 true. 한 번 true가 되면 이 씬이 끝날 때까지 유지된다.
     bool IsGameOver() const;
+    void Reset();
 
     // [데스 판정] 매 프레임 호출: 지금 존재하는 모든 블럭의 모든 칸을 훑어서, 하나라도 데스존
     // (Constants::FLOOR_LEFT_X/FLOOR_RIGHT_X 바깥, GetDeathZoneTopY() 아래 — 밟을 땅이 없는 영역)에

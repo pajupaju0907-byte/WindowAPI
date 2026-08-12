@@ -66,3 +66,9 @@ Vector2 CameraManager::GetPosition() const
 {
     return m_position;
 }
+
+void CameraManager::ResetCamera()
+{
+    m_position.y = 0.0f;
+    m_targetY = 0.0f;
+}

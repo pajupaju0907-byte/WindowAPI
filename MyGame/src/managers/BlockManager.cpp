@@ -147,6 +147,11 @@ bool BlockManager::IsGameOver() const
     return m_isGameOver;
 }
 
+void BlockManager::Reset()
+{
+    m_blocks.clear(), m_currentFallingBlock = nullptr, m_isGameOver = false, m_fallTimer = m_lockDelayTimer = m_moveTimer = 0.0f;
+}
+
 float BlockManager::GetDeathZoneTopY() const
 {
     // WorldToScreen이 worldPos - cameraPosition이므로, "지금 화면 맨 아래(스크린 y = WINDOW_HEIGHT)"에

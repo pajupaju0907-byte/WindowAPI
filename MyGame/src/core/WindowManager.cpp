@@ -184,9 +184,18 @@ int WindowManager::MessageLoop()
 			// 남은 시간만큼 재워서 60fps로 제한하고, CPU를 계속 100% 쓰지 않게 한다
 			double elapsedSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - lastFrameTime).count();
 			double remainingSeconds = Constants::TARGET_FRAME_SECONDS - elapsedSeconds;
+			if (remainingSeconds > Constants::FRAME_LIMITER_SPIN_MARGIN_SECONDS)
+			{
+				// [프레임 페이싱] 마지막 스핀 마진만큼은 남겨두고 잔다 — Sleep()은 그 구간까지 정확히
+				// 재우려 하면 OS 스케줄러 지터로 목표 시간을 넘겨버리기 쉽다.
+				double sleepSeconds = remainingSeconds - Constants::FRAME_LIMITER_SPIN_MARGIN_SECONDS;
+				Sleep(static_cast<DWORD>(sleepSeconds * 1000.0));
+				continue;
+			}
 			if (remainingSeconds > 0.0)
 			{
-				Sleep(static_cast<DWORD>(remainingSeconds * 1000.0));
+				// [프레임 페이싱] 마지막 자투리 시간은 Sleep 없이 스핀(바쁜 대기)으로 채워서, 그
+				// 시점의 실제 경과 시간이 목표를 최대한 정확히 맞추게 한다
 				continue;
 			}
 			lastFrameTime = std::chrono::steady_clock::now();

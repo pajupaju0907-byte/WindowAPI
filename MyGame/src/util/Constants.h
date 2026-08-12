@@ -10,6 +10,16 @@ namespace Constants
 	// 48px 타일 * 14x20 그리드 = 672x960 창 크기
 	constexpr float TILE_SIZE = 48.0f;
 
+	// [블럭 색상] BlockT.png는 가로로 색깔 정사각형 11칸이 이어진 스프라이트시트(칸 사이 여백 있음).
+	// 테트로미노 7종은 이 중 앞에서부터 7칸(0~6)을 하나씩 잘라 쓴다(TetrominoBlock::TetrominoBlock 참고).
+	// 실제 정사각형 그림은 이미지(1536x1024) 전체가 아니라 세로 가운데의 좁은 띠 안에만 있고 위아래는
+	// 거대한 여백이라, 세로를 이미지 전체 높이로 잡으면 정사각형 타일에 그릴 때 심하게 찌부러진다.
+	// 그래서 실제 그림이 있는 영역(픽셀 단위로 측정한 값)만 잘라 쓴다.
+	constexpr float BLOCK_COLOR_SHEET_CONTENT_LEFT = 25.0f;
+	constexpr float BLOCK_COLOR_SHEET_CONTENT_TOP = 428.0f;
+	constexpr float BLOCK_COLOR_SHEET_SLOT_WIDTH = 135.3f;
+	constexpr float BLOCK_COLOR_SHEET_SLOT_HEIGHT = 145.0f;
+
 	//발판 사이즈
 	constexpr int FLOOR_WIDTH_TILES = 8;
 	constexpr int FLOOR_HEIGHT_TILES = 3;
@@ -211,32 +221,41 @@ namespace Constants
 
 	// [타이틀 화면] 제목(Title.png) 중심의 세로 위치(화면 좌표, px). 가로는 항상 창 가운데로 고정
 	constexpr float TITLE_IMAGE_CENTER_Y = WINDOW_HEIGHT * 0.3f;
+	constexpr float GAME_OVER_IMAGE_CENTER_Y = WINDOW_HEIGHT * 0.3f;
 
 	// [타이틀 화면] 제목 이미지를 창 안에 맞춘(contain) 크기에 추가로 곱하는 배율. 1.0이면 창에 꽉 차게,
 	// 작을수록 더 작게 그린다.
 	constexpr float TITLE_IMAGE_SCALE = 0.9f;
+	constexpr float GAME_OVER_IMAGE_SCALE = 0.8f;
 
 	// [타이틀 연출] 제목이 낙하를 시작하는 지점의 세로 오프셋(px, 음수=제자리보다 위). 이만큼 위에서
 	// 시작해서 떨어지다가 제자리(오프셋 0)에서 튕긴다.
 	constexpr float TITLE_DROP_START_OFFSET_Y = -WINDOW_HEIGHT * 0.6f;
+	constexpr float GAME_OVER_DROP_START_OFFSET_Y = -WINDOW_HEIGHT * 0.6f;
 
 	// [타이틀 연출] 낙하 가속도(px/s^2). 블록 물리의 GRAVITY와는 무관한 연출 전용 값이라 따로 둔다.
 	constexpr float TITLE_DROP_GRAVITY = 2500.0f;
+	constexpr float GAME_OVER_DROP_GRAVITY = 2500.0f;
 
 	// [타이틀 연출] 제자리(오프셋 0)에 닿아 튕길 때 남기는 속도 비율(0~1). BOUNCE_RESTITUTION과 같은
 	// 개념이지만, 블록은 거의 안 튕겨야 하고 이건 눈에 보이게 살짝 튕겨야 해서 훨씬 크게 잡는다.
 	constexpr float TITLE_DROP_BOUNCE_RESTITUTION = 0.35f;
+	constexpr float GAME_OVER_DROP_BOUNCE_RESTITUTION = 0.35f;
 
 	// [타이틀 연출] 튕기는 속도가 이 값(px/s) 밑으로 떨어지면 완전히 멈춘 것으로 보고 연출을 끝낸다
 	constexpr float TITLE_DROP_SETTLE_SPEED = 40.0f;
+	constexpr float GAME_OVER_DROP_SETTLE_SPEED = 40.0f;
+
+	constexpr float GAME_OVER_SCORE_CENTER_Y = WINDOW_HEIGHT * 0.5f;
+	constexpr float GAME_OVER_BUTTON_CENTER_Y = WINDOW_HEIGHT * 0.7f;
 
 	// [타이틀 화면] 시작 버튼 중심의 세로 위치(화면 좌표, px). 가로는 항상 창 가운데(WINDOW_WIDTH/2)로 고정.
 	// Option/Ranking(비활성)은 이 값 기준으로 버튼 한 칸 높이씩 아래로 이어 붙는다(GetOptionButtonCenter 등 참고)
-	constexpr float TITLE_BUTTON_CENTER_Y = WINDOW_HEIGHT * 0.6f;
+	constexpr float TITLE_BUTTON_CENTER_Y = WINDOW_HEIGHT * 0.55f;
 
 	// [타이틀 화면] 버튼을 그릴 목표 가로 크기(px). 원본 PNG 비율은 유지한 채 이 너비에 맞춰 축소한다.
 	// 원본 이미지가 화면보다 훨씬 커서 그대로 그리면 화면을 뒤덮어버리는 문제 때문에 필요.
-	constexpr float TITLE_BUTTON_TARGET_WIDTH = TILE_SIZE * 4.95f;
+	constexpr float TITLE_BUTTON_TARGET_WIDTH = TILE_SIZE * 5.7f;
 
 	// [타이틀 화면] 클릭 판정 영역은 버튼을 "그리는" 크기와 따로 둔다 — 배경(TitleBackGround.png) 안에
 	// 옵션/랭킹 버튼이 시작 버튼 근처에 같이 그려져 있으면, 그리는 크기 그대로 클릭 판정을 하다가
@@ -246,18 +265,28 @@ namespace Constants
 	constexpr float TITLE_BUTTON_HITBOX_SCALE_X = 0.65f;
 	constexpr float TITLE_BUTTON_HITBOX_SCALE_Y = 0.5f;
 
+	// [게임오버 화면] Button2.png(Retry/Title)용 클릭 판정 배율. TITLE_BUTTON_HITBOX_SCALE_X/Y와 같은
+	// 역할이지만 그림이 달라서 값도 따로 튜닝한다.
+	constexpr float GAME_OVER_BUTTON_HITBOX_SCALE_X = 0.8f;
+	constexpr float GAME_OVER_BUTTON_HITBOX_SCALE_Y = 0.4f;
+
 	// [타이틀 화면] 클릭 판정 영역의 중심을 버튼 그림 중심에서 세로로 얼마나 더 옮길지(px, 양수=아래로).
 	// 버튼 그림 크기(TITLE_BUTTON_TARGET_WIDTH)는 그대로 두고 판정 영역 위치만 미세 조정하고 싶을 때 쓴다.
 	constexpr float TITLE_BUTTON_HITBOX_OFFSET_Y = 10.0f;
+
+	// [게임오버 화면] Button2.png(Retry/Title)용 클릭 판정 세로 오프셋. TITLE_BUTTON_HITBOX_OFFSET_Y와 같은
+	// 역할인데, Retry/Title 두 그림의 내부 여백이 서로 달라서 슬롯별로 따로 둔다.
+	constexpr float GAME_OVER_RETRY_HITBOX_OFFSET_Y = 33.9f;
+	constexpr float GAME_OVER_TITLE_HITBOX_OFFSET_Y = -30.4f;
 
 	// [타이틀 화면] 아직 기능이 없는 Option/Ranking 버튼을 흐리게(비활성처럼) 그릴 불투명도(0~1)
 	constexpr float TITLE_DISABLED_BUTTON_OPACITY = 0.5f;
 
 	// [타이틀 화면] 종료 버튼 중심의 세로 위치(화면 좌표, px). 가로는 항상 창 가운데로 고정
-	constexpr float TITLE_EXIT_BUTTON_CENTER_Y = WINDOW_HEIGHT * 0.92f;
+	constexpr float TITLE_EXIT_BUTTON_CENTER_Y = WINDOW_HEIGHT * 0.91f;
 
 	// [타이틀 화면] 종료 버튼을 그릴 목표 가로 크기(px). 원본 비율 유지한 채 이 너비에 맞춰 축소
-	constexpr float TITLE_EXIT_BUTTON_TARGET_WIDTH = TILE_SIZE * 3.5f;
+	constexpr float TITLE_EXIT_BUTTON_TARGET_WIDTH = TILE_SIZE * 4.0f;
 
 	//격자선 색상 ( 연한 회색 )
 	constexpr COLORREF GRID_LINE_COLOR = RGB(220, 220, 220);
@@ -269,14 +298,24 @@ namespace Constants
 	constexpr COLORREF PHYSICS_DEBUG_TEXT_COLOR = RGB(255, 255, 0);
 
 	// 프레임 제한: 목표 FPS와, 그로부터 계산한 한 프레임당 목표 시간(초)
-	constexpr int TARGET_FPS = 60;
+	constexpr int TARGET_FPS = 120;
 	constexpr double TARGET_FRAME_SECONDS = 1.0 / TARGET_FPS;
+
+	// [프레임 페이싱] 목표 시간까지 남은 구간이 이 값(초) 이하로 좁혀지면 Sleep()을 더 이상 부르지 않고
+	// 스핀(바쁜 대기)으로 전환한다. Sleep()은 OS 스케줄러 지터(보통 0.5~2ms) 때문에 짧은 구간에서
+	// 오차가 커서, 마지막 자투리 시간만큼은 CPU를 계속 쓰더라도 스핀으로 정확히 맞추는 편이 낫다.
+	constexpr double FRAME_LIMITER_SPIN_MARGIN_SECONDS = 0.002;
+
+	// [FPS 표시] 순간 델타타임으로 매 프레임 fps를 계산하면 위 스핀 마진을 적용해도 남는 미세한
+	// 지터가 그대로 숫자에 드러나 깜빡여 보인다. 이 시간(초)만큼 프레임 수를 모았다가 평균을 내서
+	// 표시용 FPS를 갱신하면 실제 페이싱은 그대로 두고 화면에 보이는 숫자만 안정된다.
+	constexpr float FPS_SMOOTHING_INTERVAL_SECONDS = 0.25f;
 
 	// FPS 표시(디버그용) 위치/색상
 	constexpr int FPS_TEXT_MARGIN = 8;
 	constexpr COLORREF FPS_TEXT_COLOR = RGB(255, 0, 0);
 	
-	constexpr float METERS_PER_TILE = 0.5f; // 1타일 = 0.5미터
+	constexpr float METERS_PER_TILE = 1.0f; // 1타일 = 0.5미터
 
 	// [높이 기록 표시] 화면 위쪽 중앙에 뜨는 "N.Nm" 텍스트의 글자 크기/색, 뒤에 까는 배경 색/불투명도/크기
 	constexpr float HEIGHT_RECORD_FONT_SIZE = 32.0f;
