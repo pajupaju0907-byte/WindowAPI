@@ -16,15 +16,21 @@
 
 namespace
 {
+    // 화면에 쌓는 순서(위=0, 아래=1) — Button.png 시트 안의 어느 칸을 쓸지와는 별개의 값
     constexpr int BUTTON_SLOT_RETRY = 0;
     constexpr int BUTTON_SLOT_TITLE = 1;
+
+    // Button.png(TitleScene.cpp와 같이 쓰는 6버튼 시트) 안에서 Title/Retry가 차지하는 실제 그림 영역.
+    // 전체 6칸(TitleScene.cpp의 BUTTON_SHEET_SOURCE_RECTS) 중 5번째=Title, 6번째=Retry.
+    constexpr D2D1_RECT_F TITLE_BUTTON_SOURCE_RECT = { 42.0f, 656.0f, 766.0f, 905.0f };
+    constexpr D2D1_RECT_F RETRY_BUTTON_SOURCE_RECT = { 771.0f, 656.0f, 1492.0f, 905.0f };
 }
 
 void GameOverScene::Enter()
 {
     ResourceManager::GetInstance().LoadSprite("assets/GameOverBG.png");
     ResourceManager::GetInstance().LoadSprite("assets/GameOverText.png");
-    ResourceManager::GetInstance().LoadSprite("assets/Button2.png");
+    ResourceManager::GetInstance().LoadSprite("assets/Button.png");
 
     m_gameOverDropOffsetY = Constants::GAME_OVER_DROP_START_OFFSET_Y;
     m_gameOverDropVelocityY = 0.0f;
@@ -103,7 +109,7 @@ void GameOverScene::Render(ID2D1RenderTarget* renderTarget)
         { Constants::WINDOW_WIDTH / 2.0f, Constants::GAME_OVER_SCORE_CENTER_Y },
         BlockManager::GetInstance().GetTallestHeightMeters());
 
-    const SpriteInfo& buttonSprite = ResourceManager::GetInstance().GetSpriteInfo("assets/Button2.png");
+    const SpriteInfo& buttonSprite = ResourceManager::GetInstance().GetSpriteInfo("assets/Button.png");
     if (buttonSprite.bitmap)
     {
         D2D1_RECT_F TitleRect = GetButtonSlotSourceRect(BUTTON_SLOT_TITLE);
@@ -123,8 +129,8 @@ void GameOverScene::Render(ID2D1RenderTarget* renderTarget)
 }
 Vector2 GameOverScene::GetButtonSlotCenter(int slotIndex) const
 {
-    // slotIndex가 클수록 Start 자리 밑으로 버튼 한 칸 높이씩(GetButtonSize().y) 이어 붙는다
-    float stepY = GetButtonSize().y;
+    // slotIndex가 클수록 버튼 한 칸 높이 + 여백(TitleScene과 같은 TITLE_BUTTON_GAP_Y)씩 이어 붙는다
+    float stepY = GetButtonSize().y + Constants::TITLE_BUTTON_GAP_Y;
     return { Constants::WINDOW_WIDTH / 2.0f, Constants::GAME_OVER_BUTTON_CENTER_Y + stepY * static_cast<float>(slotIndex) };
 }
 
@@ -146,17 +152,16 @@ Vector2 GameOverScene::GetButtonSize() const
 
 Vector2 GameOverScene::GetButtonHitboxCenter(int slotIndex) const
 {
-    Vector2 center = GetButtonSlotCenter(slotIndex );
-    center.y += (slotIndex == BUTTON_SLOT_TITLE) ? Constants::GAME_OVER_TITLE_HITBOX_OFFSET_Y : Constants::GAME_OVER_RETRY_HITBOX_OFFSET_Y;
-    return center;
+    // TITLE_BUTTON_SOURCE_RECT/RETRY_BUTTON_SOURCE_RECT가 알파 채널로 측정한 실제 버튼 모양이라,
+    // 그리는 중심을 그대로 쓴다 (TitleScene::GetButtonHitboxCenter와 같은 이유)
+    return GetButtonSlotCenter(slotIndex);
 }
 
 Vector2 GameOverScene::GetButtonHitboxSize(int slotIndex) const
 {
-    // 그리는 크기보다 좁게(또는 넓게) 잡아서, 옆 칸(Option/Ranking)까지 눌리지 않으면서도 실제
-    // 버튼 그림 모양(가로로 넓고 얇은 형태 등)에 맞출 수 있게 가로/세로를 따로 조절한다
-    Vector2 drawnSize = GetButtonSize();
-    return { drawnSize.x * Constants::GAME_OVER_BUTTON_HITBOX_SCALE_X, drawnSize.y * Constants::GAME_OVER_BUTTON_HITBOX_SCALE_Y };
+    (void)slotIndex;
+    // 그리는 크기 자체가 이미 버튼 모양에 맞게 측정된 값이라 그대로 판정 크기로 쓴다
+    return GetButtonSize();
 }
 
 
@@ -167,14 +172,5 @@ bool GameOverScene::IsPointInRect(Vector2 point, Vector2 rectCenter, Vector2 rec
 }
 D2D1_RECT_F GameOverScene::GetButtonSlotSourceRect(int slotIndex) const
 {
-    const SpriteInfo& buttonSprite = ResourceManager::GetInstance().GetSpriteInfo("assets/Button2.png");
-    if (!buttonSprite.bitmap)
-    {
-        return D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f);
-    }
-
-    D2D1_SIZE_F nativeSize = buttonSprite.bitmap->GetSize();
-    float slotHeight = nativeSize.height / 2.0f;
-    float top = slotHeight * static_cast<float>(slotIndex);
-    return D2D1::RectF(0.0f, top, nativeSize.width, top + slotHeight);
+    return (slotIndex == BUTTON_SLOT_TITLE) ? TITLE_BUTTON_SOURCE_RECT : RETRY_BUTTON_SOURCE_RECT;
 }

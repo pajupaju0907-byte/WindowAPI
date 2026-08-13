@@ -39,6 +39,11 @@ public:
     // 착지한 블럭까지 포함해 지금까지 스폰된 모든 블럭 조회 (렌더링 등에서 전체 순회용)
     std::vector<Block*> GetAllBlocks() const;
 
+    // 다음에 스폰될 테트로미노를 미리 조회 (다음 블럭 미리보기 렌더링용). m_blocks에는 속하지 않고
+    // 그리드 위치도 없는(항상 기본값 0,0) 별도 인스턴스라, 아직 실제로 존재하는 블럭이 아니다 —
+    // 렌더링 목적으로만 읽어야 한다.
+    const Block* GetNextBlockPreview() const;
+
     // [데스 판정] 블럭이 데스존(CheckDeathZone)에 닿았으면 true. 한 번 true가 되면 이 씬이 끝날 때까지 유지된다.
     bool IsGameOver() const;
     void Reset();
@@ -57,6 +62,11 @@ private:
     // worldPoint가 데스존 안에 있는지 판정
     bool IsPointInDeathZone(Vector2 worldPoint) const;
 
+    // 무작위 모양의 테트로미노 하나를 새로 만든다(그리드 위치는 지정하지 않은 채로). SpawnBlock이
+    // 실제로 낙하시킬 블럭을 만들 때와, m_nextBlockPreview를 채울 때 공통으로 쓴다 — 모양을 뽑는
+    // 코드가 두 곳에 따로 있으면 나중에 어긋나기 쉬워서 한 곳으로 모았다.
+    std::unique_ptr<Block> CreateRandomTetromino();
+
     BlockManager() = default;
     ~BlockManager();
     BlockManager(const BlockManager&) = delete;
@@ -65,6 +75,12 @@ private:
     // 블럭의 생명주기를 책임지는 유일한 소유자
     std::vector<std::unique_ptr<Block>> m_blocks;
     Block* m_currentFallingBlock = nullptr;
+
+    // [다음 블럭 미리보기] 이미 모양이 정해졌지만 아직 스폰(m_blocks에 편입)되지는 않은 블럭.
+    // SpawnBlock(BlockType::Tetromino)이 매번 새로 랜덤을 뽑는 대신 이걸 그대로 가져다 쓰고, 빠진
+    // 자리를 CreateRandomTetromino()로 다시 채운다 — "모양을 정하는 시점"과 "그 모양이 실제로
+    // 떨어지기 시작하는 시점"을 분리해야 그 사이(=다음 블럭)를 미리 화면에 보여줄 수 있다.
+    std::unique_ptr<Block> m_nextBlockPreview;
 
     // 다음 그리드 낙하 스텝(StepDown)까지 남은 시간
     float m_fallTimer = 0.0f;

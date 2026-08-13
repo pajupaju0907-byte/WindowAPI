@@ -43,6 +43,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     // 명시적으로 정리한다
     ResourceManager::GetInstance().Shutdown();
     SoundManager::GetInstance().Shutdown();
+    WindowManager::GetInstance().Shutdown();
 
     CoUninitialize();
     return result;

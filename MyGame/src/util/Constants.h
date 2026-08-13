@@ -36,6 +36,10 @@ namespace Constants
 	constexpr COLORREF DEATH_ZONE_COLOR = RGB(255, 0, 0);
 	constexpr float DEATH_ZONE_OPACITY = 0.35f;
 
+	// [낙하 가이드] 낙하 중인 블럭이 착지할 위치까지의 경로를 반투명 흰색으로 표시한다. 블럭보다 먼저(뒤에) 그린다.
+	constexpr COLORREF DROP_GUIDE_COLOR = RGB(255, 255, 255);
+	constexpr float DROP_GUIDE_OPACITY = 0.25f;
+
 	constexpr int WINDOW_WIDTH = static_cast<int>(GRID_WIDTH * TILE_SIZE);
 	constexpr int WINDOW_HEIGHT = static_cast<int>(GRID_HEIGHT * TILE_SIZE);
 
@@ -131,6 +135,15 @@ namespace Constants
 	// TrySleepAll의 정상 판정으로는 영원히 안 잠드는 경우를 위한 안전장치. Awake/Toppling 상태로
 	// 이 시간(초)을 넘기면, 지지대가 있는 한 속도와 무관하게 강제로 Sleeping 처리한다.
 	constexpr float FORCE_SLEEP_TIMEOUT = 3.0f;
+
+	// [넘어짐 끼임 타임아웃] Toppling 블럭이 옆 블럭이나 바닥 모서리에 끼어서(wedge) 더는 못 넘어가지도,
+	// 무게중심이 다시 지지 범위 안으로 돌아와 균형을 되찾지도 못하는 경우를 위한 안전장치.
+	// SettleToppledBlocks는 원래 "화면 밖으로 떨어짐" 또는 "균형 회복" 두 경로로만 Toppling을 빠져나가는데,
+	// 끼인 블럭은 둘 다 영원히 못 만족해서 무한정 그 상태로 방치된다. 지지대는 있는데 이 시간(초)만큼
+	// 계속 Toppling에 머물러 있으면, 실제로 안정된 자세가 아니어도 그 자리에서 강제로 멈춘다(ForceStabilize).
+	// FORCE_SLEEP_TIMEOUT과 같은 목적이지만, Toppling 초반엔 진짜로 활발히 넘어지는 시간이 있을 수 있어
+	// 별도 상수로 분리해서 독립적으로 조정할 수 있게 한다.
+	constexpr float TOPPLE_STUCK_TIMEOUT = 3.0f;
 
 	// [각도 스냅] Sleep()에서 90도 배수와의 차이가 이 값(도) 이내일 때만 각도를 반올림한다.
 	// 항상 반올림하면, 다른 블럭에 기대서 진짜로 비스듬히 안정된 블럭까지 강제로 우뚝 세워버리게 된다 —
@@ -265,38 +278,21 @@ namespace Constants
 
 	// [타이틀 화면] 버튼을 그릴 목표 가로 크기(px). 원본 PNG 비율은 유지한 채 이 너비에 맞춰 축소한다.
 	// 원본 이미지가 화면보다 훨씬 커서 그대로 그리면 화면을 뒤덮어버리는 문제 때문에 필요.
-	constexpr float TITLE_BUTTON_TARGET_WIDTH = TILE_SIZE * 5.7f;
+	// (5.7에서 5% 줄인 값 — 버튼 전체 크기를 살짝 작게)
+	constexpr float TITLE_BUTTON_TARGET_WIDTH = TILE_SIZE * 5.415f;
 
-	// [타이틀 화면] 클릭 판정 영역은 버튼을 "그리는" 크기와 따로 둔다 — 배경(TitleBackGround.png) 안에
-	// 옵션/랭킹 버튼이 시작 버튼 근처에 같이 그려져 있으면, 그리는 크기 그대로 클릭 판정을 하다가
-	// 그 버튼들까지 눌리는 문제가 생긴다. 시작 버튼 글자/그림이 있는 부분만 좁혀서 잡을 수 있게
-	// 그리는 크기에 곱하는 배율로 둔다. 가로/세로를 따로 둬서, 버튼 모양이 옆으로 넓고 얇으면
-	// 가로는 넉넉하게(1에 가깝게), 세로는 좁게 잡는 식으로 독립적으로 맞출 수 있다.
-	constexpr float TITLE_BUTTON_HITBOX_SCALE_X = 0.65f;
-	constexpr float TITLE_BUTTON_HITBOX_SCALE_Y = 0.5f;
+	// [타이틀 화면] 버튼끼리 세로로 이어 붙일 때, 버튼 높이(GetButtonSize().y)에 더해 추가로 띄울 간격(px)
+	constexpr float TITLE_BUTTON_GAP_Y = 14.0f;
 
-	// [게임오버 화면] Button2.png(Retry/Title)용 클릭 판정 배율. TITLE_BUTTON_HITBOX_SCALE_X/Y와 같은
-	// 역할이지만 그림이 달라서 값도 따로 튜닝한다.
-	constexpr float GAME_OVER_BUTTON_HITBOX_SCALE_X = 0.8f;
-	constexpr float GAME_OVER_BUTTON_HITBOX_SCALE_Y = 0.4f;
+	// [타이틀 화면] 클릭 판정 영역은 Button.png에서 알파 채널로 실제 그림 영역만 오려 쓴 BUTTON_SHEET_SOURCE_RECTS
+	// 기준이라, 그리는 크기(GetButtonSize())가 이미 버튼 모양에 맞게 측정된 값이다. 그래서 판정 영역도
+	// 그리는 크기/중심을 그대로 쓴다 — 별도의 축소 배율이나 위치 보정이 필요 없다.
 
-	// [타이틀 화면] 클릭 판정 영역의 중심을 버튼 그림 중심에서 세로로 얼마나 더 옮길지(px, 양수=아래로).
-	// 버튼 그림 크기(TITLE_BUTTON_TARGET_WIDTH)는 그대로 두고 판정 영역 위치만 미세 조정하고 싶을 때 쓴다.
-	constexpr float TITLE_BUTTON_HITBOX_OFFSET_Y = 10.0f;
-
-	// [게임오버 화면] Button2.png(Retry/Title)용 클릭 판정 세로 오프셋. TITLE_BUTTON_HITBOX_OFFSET_Y와 같은
-	// 역할인데, Retry/Title 두 그림의 내부 여백이 서로 달라서 슬롯별로 따로 둔다.
-	constexpr float GAME_OVER_RETRY_HITBOX_OFFSET_Y = 33.9f;
-	constexpr float GAME_OVER_TITLE_HITBOX_OFFSET_Y = -30.4f;
+	// [게임오버 화면] Retry/Title도 TitleScene과 같은 Button.png 시트를 알파 채널로 측정해 쓰는
+	// 거라, 클릭 판정도 타이틀처럼 그리는 크기/중심을 그대로 쓴다 — 별도 배율/오프셋 불필요.
 
 	// [타이틀 화면] 아직 기능이 없는 Option/Ranking 버튼을 흐리게(비활성처럼) 그릴 불투명도(0~1)
 	constexpr float TITLE_DISABLED_BUTTON_OPACITY = 0.5f;
-
-	// [타이틀 화면] 종료 버튼 중심의 세로 위치(화면 좌표, px). 가로는 항상 창 가운데로 고정
-	constexpr float TITLE_EXIT_BUTTON_CENTER_Y = WINDOW_HEIGHT * 0.91f;
-
-	// [타이틀 화면] 종료 버튼을 그릴 목표 가로 크기(px). 원본 비율 유지한 채 이 너비에 맞춰 축소
-	constexpr float TITLE_EXIT_BUTTON_TARGET_WIDTH = TILE_SIZE * 4.0f;
 
 	//격자선 색상 ( 연한 회색 )
 	constexpr COLORREF GRID_LINE_COLOR = RGB(220, 220, 220);
@@ -336,33 +332,45 @@ namespace Constants
 	// 배경판 위아래로 글자 크기 기준으로 남길 여백(px)
 	constexpr float HEIGHT_RECORD_PANEL_PADDING = 16.0f;
 
+	// [다음 블럭 미리보기] 화면 오른쪽 위 모서리에 Next.png(정사각형 판넬) 배경을 고정 표시하고,
+	// 그 위에 다음에 나올 테트로미노를 축소해서 그린다.
+	constexpr float NEXT_PANEL_TARGET_WIDTH = TILE_SIZE * 3.0f;
+	// 판넬을 화면 모서리에서 얼마나 띄울지(px)
+	constexpr float NEXT_PANEL_MARGIN = TILE_SIZE * 0.3f;
+	constexpr float NEXT_PANEL_CENTER_X = WINDOW_WIDTH - NEXT_PANEL_TARGET_WIDTH / 2.0f - NEXT_PANEL_MARGIN;
+	constexpr float NEXT_PANEL_CENTER_Y = NEXT_PANEL_TARGET_WIDTH / 2.0f + NEXT_PANEL_MARGIN;
+	// 판넬 안에 그릴 블럭 칸 하나의 크기(px). 실제 낙하 블럭(TILE_SIZE)보다 작게 그려야 판넬 안에 들어간다.
+	// 가장 가로로 긴 모양(I자, 4칸)이 이 값의 4배 폭으로 그려지니, NEXT_PANEL_TARGET_WIDTH보다
+	// 너무 커지지 않도록 조정할 것 — 값을 바꿔도 패널 중앙 정렬(RenderNextBlockPreview)은 자동으로 맞춰진다.
+	constexpr float NEXT_PANEL_PREVIEW_TILE_SIZE = TILE_SIZE * 0.6f;
+	// 블럭 모양을 패널 정중앙보다 얼마나 아래로 내려서 그릴지(px, 양수=아래로)
+	constexpr float NEXT_PANEL_PREVIEW_OFFSET_Y = TILE_SIZE * 0.2f;
+
 	// [타이틀 화면 - 옵션 패널] Option 버튼을 누르면 뜨는 볼륨 조절 오버레이. 화면 중앙에 뜬다
 	constexpr float OPTION_PANEL_CENTER_Y = WINDOW_HEIGHT * 0.5f;
-	constexpr float OPTION_PANEL_WIDTH = TILE_SIZE * 9.0f;
-	constexpr float OPTION_PANEL_HEIGHT = TILE_SIZE * 3.5f;
-	constexpr COLORREF OPTION_PANEL_BACKGROUND_COLOR = RGB(20, 20, 30);
-	constexpr float OPTION_PANEL_BACKGROUND_OPACITY = 0.9f;
+	// Pop.png(팝업창 배경 그림) 가로 크기를 이 값에 맞추고, 세로는 원본 비율 그대로 계산한다
+	// (다른 버튼 이미지들과 같은 방식 — TitleScene::GetOptionPanelSize 참고)
+	constexpr float OPTION_PANEL_IMAGE_TARGET_WIDTH = TILE_SIZE * 9.0f;
 	// 패널 왼쪽 끝에서 스피커 아이콘까지, 스피커 아이콘에서 첫 볼륨 바까지 남길 여백(px)
+
+	// Ranking.png(랭킹 팝업 그림) 크기를 화면 크기 대비 비율로 직접 정한다(원본 비율은 무시) —
+	// 화면을 거의 다 채우도록 가로는 창 너비 그대로, 세로는 창 높이의 80%로 키운다.
+	constexpr float RANKING_PANEL_WIDTH_RATIO = 1.0f;
+	constexpr float RANKING_PANEL_HEIGHT_RATIO = 0.8f;
+
 	constexpr float OPTION_PANEL_PADDING_X = 28.0f;
 	// 볼륨 바들의 공통 바닥선을 패널 아래쪽 끝에서 얼마나 띄울지(px)
 	constexpr float OPTION_PANEL_BAR_BOTTOM_MARGIN = 28.0f;
 
-	// [볼륨 바] 칸 5개, 칸당 20%(=1/VOLUME_BAR_COUNT). 왼쪽부터 오른쪽으로 갈수록
-	// VOLUME_BAR_HEIGHT_STEP씩 계단식으로 높아진다(참고 이미지와 동일한 모양).
-	// 칸을 클릭하면 그 칸까지(1~5번째) 볼륨이 채워진다.
+	// [볼륨 바] 칸 5개, 칸당 20%(=1/VOLUME_BAR_COUNT). 칸을 클릭하면 그 칸까지(1~5번째) 볼륨이 채워진다.
+	// 각 칸의 실제 크기/간격은 soundbar.png 원본에 그려진 그대로(TitleScene::GetSoundBarElementSize/Center
+	// 참고)를 SOUND_BAR_GROUP_SCALE 배율로만 줄이거나 키운다 — 개별 폭/간격을 따로 정하지 않는다.
 	constexpr int VOLUME_BAR_COUNT = 5;
 	constexpr float VOLUME_BAR_STEP = 1.0f / VOLUME_BAR_COUNT;
-	constexpr float VOLUME_BAR_WIDTH = 26.0f;
-	constexpr float VOLUME_BAR_GAP = 14.0f;
-	constexpr float VOLUME_BAR_MIN_HEIGHT = 26.0f;
-	constexpr float VOLUME_BAR_HEIGHT_STEP = 18.0f;
 	// 현재 볼륨보다 뒤(꺼진) 칸을 흐리게 표시할 불투명도
 	constexpr float VOLUME_BAR_DIM_OPACITY = 0.25f;
 
-	// [스피커 아이콘] 볼륨 바 왼쪽에 그리는 스피커 모양(사각 몸통 + 세모 콘) 크기/색
-	constexpr float SPEAKER_ICON_BODY_WIDTH = 12.0f;
-	constexpr float SPEAKER_ICON_BODY_HEIGHT = 16.0f;
-	constexpr float SPEAKER_ICON_CONE_WIDTH = 14.0f;
-	constexpr float SPEAKER_ICON_CONE_HEIGHT = 26.0f;
-	constexpr COLORREF SPEAKER_ICON_COLOR = RGB(250, 200, 60);
+	// [스피커+볼륨 바 그룹] soundbar.png 안에서 스피커 아이콘과 바 5개가 이루는 배치(크기/간격 비율)를
+	// 그대로 유지한 채, 그룹 전체를 이 배율 하나로만 줄이거나 키운다.
+	constexpr float SOUND_BAR_GROUP_SCALE = 0.27f;
 }

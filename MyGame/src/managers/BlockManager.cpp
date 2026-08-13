@@ -19,17 +19,24 @@ BlockManager& BlockManager::GetInstance()
 
 BlockManager::~BlockManager() = default;
 
+std::unique_ptr<Block> BlockManager::CreateRandomTetromino()
+{
+    TetrominoShape randomShape = static_cast<TetrominoShape>(rand() % 7);
+    return std::make_unique<TetrominoBlock>(randomShape);
+}
+
 void BlockManager::SpawnBlock(BlockType type)
 {
     std::unique_ptr<Block> spawnedBlock;
     switch (type)
     {
     case BlockType::Tetromino:
-    {
-        TetrominoShape randomShape = static_cast<TetrominoShape>(rand() % 7);
-        spawnedBlock = std::make_unique<TetrominoBlock>(randomShape);
-    }
-    break;
+        // 새로 랜덤을 뽑지 않고, Reset()/직전 SpawnBlock() 호출에서 미리 뽑아둔 m_nextBlockPreview를
+        // 그대로 이번에 낙하시킬 블럭으로 쓴다. 그리고 빠진 자리를 곧바로 다시 채워둬야 다음 번에도
+        // "미리 뽑아둔 다음 블럭"이 항상 존재한다.
+        spawnedBlock = std::move(m_nextBlockPreview);
+        m_nextBlockPreview = CreateRandomTetromino();
+        break;
     case BlockType::GiantTetromino:
         spawnedBlock = std::make_unique<GiantTetrominoBlock>();
         break;
@@ -150,6 +157,10 @@ bool BlockManager::IsGameOver() const
 void BlockManager::Reset()
 {
     m_blocks.clear(), m_currentFallingBlock = nullptr, m_isGameOver = false, m_fallTimer = m_lockDelayTimer = m_moveTimer = 0.0f;
+
+    // 첫 SpawnBlock(BlockType::Tetromino) 호출 전에 "다음 블럭"이 미리 준비되어 있어야
+    // 미리보기가 게임 시작 직후부터 빈 채로 있지 않는다.
+    m_nextBlockPreview = CreateRandomTetromino();
 }
 
 float BlockManager::GetDeathZoneTopY() const
@@ -241,6 +252,11 @@ void BlockManager::RemoveBlock(Block* block)
 Block* BlockManager::GetCurrentFallingBlock() const
 {
     return m_currentFallingBlock;
+}
+
+const Block* BlockManager::GetNextBlockPreview() const
+{
+    return m_nextBlockPreview.get();
 }
 
 std::vector<Block*> BlockManager::GetAllBlocks() const

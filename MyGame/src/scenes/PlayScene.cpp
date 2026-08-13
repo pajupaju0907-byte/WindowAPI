@@ -12,6 +12,7 @@
 #include "../managers/PhysicsManager.h"
 #include "../core/InputManager.h"
 #include "../core/SceneManager.h"
+#include <cmath>
 void PlayScene::Enter()
 {
 	BlockManager::GetInstance().Reset();
@@ -25,6 +26,7 @@ void PlayScene::Enter()
     ResourceManager::GetInstance().LoadSprite("assets/bottomleft.png");
     ResourceManager::GetInstance().LoadSprite("assets/bottomcenter.png");
     ResourceManager::GetInstance().LoadSprite("assets/bottomright.png");
+    ResourceManager::GetInstance().LoadSprite("assets/Next.png");
 
     SoundManager::GetInstance().PlayBgm("assets/Sound/IlliyardMoor.mp3");
 
@@ -152,6 +154,104 @@ void PlayScene::RenderDeathZones(ID2D1RenderTarget* renderTarget)
     RenderManager::GetInstance().FillRect(renderTarget, rightScreenCenter, { rightWidth, zoneHeight }, Constants::DEATH_ZONE_COLOR, Constants::DEATH_ZONE_OPACITY);
 }
 
+void PlayScene::RenderDropGuide(ID2D1RenderTarget* renderTarget)
+{
+    Block* fallingBlock = BlockManager::GetInstance().GetCurrentFallingBlock();
+    if (fallingBlock == nullptr)
+    {
+        return;
+    }
+
+    // 같은 열(같은 x)에 칸이 여러 개(예: 세로 2칸) 있으면 그중 가장 아래 칸만 기준으로 삼아야
+    // 열마다 사각형이 겹쳐서 그만큼 더 진하게 보이는 걸 막을 수 있다
+    constexpr int MAX_COLUMNS = 4;
+    float columnX[MAX_COLUMNS];
+    float columnBottomY[MAX_COLUMNS];
+    int columnCount = 0;
+
+    for (int cellIndex = 0; cellIndex < fallingBlock->GetCellCount(); ++cellIndex)
+    {
+        Vector2 cellPos = fallingBlock->GetCellRenderPosition(cellIndex);
+        float cellBottomY = cellPos.y + Constants::TILE_SIZE;
+
+        int existingColumn = -1;
+        for (int c = 0; c < columnCount; ++c)
+        {
+            if (fabsf(columnX[c] - cellPos.x) < 0.5f)
+            {
+                existingColumn = c;
+                break;
+            }
+        }
+
+        if (existingColumn == -1)
+        {
+            columnX[columnCount] = cellPos.x;
+            columnBottomY[columnCount] = cellBottomY;
+            ++columnCount;
+        }
+        else if (cellBottomY > columnBottomY[existingColumn])
+        {
+            columnBottomY[existingColumn] = cellBottomY;
+        }
+    }
+
+    // 실제 착지 지점이 아니라 항상 끝까지 끊기지 않고 이어서 그린다. 중간에 이미 쌓인 블럭이 있어도
+    // 이 가이드보다 나중에(위에) 그려지므로 그 구간만 자연스럽게 가려질 뿐, 가이드 자체가 착지
+    // 지점에서 뚝 끊긴 것처럼 보이진 않는다.
+    for (int c = 0; c < columnCount; ++c)
+    {
+        // 발판(FLOOR_LEFT_X~FLOOR_RIGHT_X) 위 열은 바닥 윗면에서 끊고, 그 옆 절벽(발판 없는 열)은
+        // 바닥이 없으니 대신 지금 보이는 화면 맨 아래(BlockManager::GetDeathZoneTopY, 카메라를 따라
+        // 움직임)까지 그린다 — 안 그러면 발판 옆에서만 유독 짧게 뚝 끊겨 보인다.
+        bool overlapsFloor = columnX[c] + Constants::TILE_SIZE > Constants::FLOOR_LEFT_X && columnX[c] < Constants::FLOOR_RIGHT_X;
+        float guideBottomY = overlapsFloor ? Constants::FLOOR_TOP_Y : BlockManager::GetInstance().GetDeathZoneTopY();
+        if (guideBottomY <= columnBottomY[c])
+        {
+            continue;
+        }
+
+        Vector2 worldCenter = { columnX[c] + Constants::TILE_SIZE / 2.0f, (columnBottomY[c] + guideBottomY) / 2.0f };
+        Vector2 screenCenter = CameraManager::GetInstance().WorldToScreen(worldCenter);
+        RenderManager::GetInstance().FillRect(renderTarget, screenCenter, { Constants::TILE_SIZE, guideBottomY - columnBottomY[c] }, Constants::DROP_GUIDE_COLOR, Constants::DROP_GUIDE_OPACITY);
+    }
+}
+
+void PlayScene::RenderNextBlockPreview(ID2D1RenderTarget* renderTarget)
+{
+    Vector2 panelCenter = { Constants::NEXT_PANEL_CENTER_X, Constants::NEXT_PANEL_CENTER_Y };
+
+    const SpriteInfo& panelSprite = ResourceManager::GetInstance().GetSpriteInfo("assets/Next.png");
+    if (panelSprite.bitmap)
+    {
+        RenderManager::GetInstance().DrawSpriteRotated(renderTarget, panelSprite, panelCenter, { Constants::NEXT_PANEL_TARGET_WIDTH, Constants::NEXT_PANEL_TARGET_WIDTH }, 0.0f, 0);
+    }
+
+    const Block* nextBlock = BlockManager::GetInstance().GetNextBlockPreview();
+    if (nextBlock == nullptr)
+    {
+        return;
+    }
+
+    // nextBlock은 그리드 위치를 지정한 적이 없어 (0,0) 기준 로컬 좌표로 칸들이 나온다. 그 모양
+    // 자체의 가로세로 중심(GetWorldBounds)을 구해서, 그 중심이 판넬 중앙(+세로 오프셋)에 오도록 맞춰 그린다
+    AABB shapeBounds = nextBlock->GetWorldBounds();
+    Vector2 shapeCenterLocal = { (shapeBounds.min.x + shapeBounds.max.x) / 2.0f, (shapeBounds.min.y + shapeBounds.max.y) / 2.0f };
+    float scale = Constants::NEXT_PANEL_PREVIEW_TILE_SIZE / Constants::TILE_SIZE;
+    Vector2 previewCenter = panelCenter + Vector2{ 0.0f, Constants::NEXT_PANEL_PREVIEW_OFFSET_Y };
+
+    const SpriteInfo& blockSprite = ResourceManager::GetInstance().GetSpriteInfo(nextBlock->GetSpriteId());
+    D2D1_RECT_F colorSourceRect = GetBlockColorSourceRect(nextBlock->GetColorSlotIndex());
+
+    for (int cellIndex = 0; cellIndex < nextBlock->GetCellCount(); ++cellIndex)
+    {
+        Vector2 cellLocalCenter = nextBlock->GetCellRenderPosition(cellIndex) + Vector2{ Constants::TILE_SIZE / 2.0f, Constants::TILE_SIZE / 2.0f };
+        Vector2 drawCenter = previewCenter + (cellLocalCenter - shapeCenterLocal) * scale;
+
+        RenderManager::GetInstance().DrawSpriteRotated(renderTarget, blockSprite, drawCenter, { Constants::NEXT_PANEL_PREVIEW_TILE_SIZE, Constants::NEXT_PANEL_PREVIEW_TILE_SIZE }, 0.0f, 0, 1.0f, &colorSourceRect);
+    }
+}
+
 D2D1_RECT_F PlayScene::GetBlockColorSourceRect(int slotIndex) const
 {
     float left = Constants::BLOCK_COLOR_SHEET_CONTENT_LEFT + Constants::BLOCK_COLOR_SHEET_SLOT_WIDTH * static_cast<float>(slotIndex);
@@ -163,6 +263,7 @@ void PlayScene::Render(ID2D1RenderTarget* renderTarget)
 {
     RenderBackground(renderTarget);
     RenderDeathZones(renderTarget);
+    RenderDropGuide(renderTarget);
 
     // 낙하 중이든 착지했든 전부 매 프레임 바뀔 수 있는 부분이라 매번 새로 그린다
     for (Block* block : BlockManager::GetInstance().GetAllBlocks())
@@ -177,6 +278,7 @@ void PlayScene::Render(ID2D1RenderTarget* renderTarget)
     }
 
     RenderManager::GetInstance().DrawHeightRecord(renderTarget, m_bestHeightMeters);
+    RenderNextBlockPreview(renderTarget);
 
     if (m_showColliders)
     {

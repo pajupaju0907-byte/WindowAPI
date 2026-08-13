@@ -820,6 +820,15 @@ void PhysicsManager::SettleToppledBlocks(const std::unordered_map<Block*, std::v
         if (isBalanced)
         {
             block->WakeUp();
+            continue;
+        }
+
+        // [끼임 방지] 균형을 못 찾았어도, 옆 블럭이나 바닥 모서리에 끼어서 실제로는 더 못 넘어가는
+        // 채로 TOPPLE_STUCK_TIMEOUT을 넘겨 계속 Toppling에 머물러 있으면 강제로 멈춘다 — 안 그러면
+        // 위 hasSupport/isBalanced 두 탈출 조건을 영원히 못 만족해서 그 자세 그대로 무한정 얼어붙는다.
+        if (block->GetActiveTimer() >= Constants::TOPPLE_STUCK_TIMEOUT)
+        {
+            block->ForceStabilize();
         }
     }
 }
@@ -842,6 +851,23 @@ void PhysicsManager::TrySleepAll(float deltaTime)
             if (IsCellSupported(block, i))
             {
                 hasSupport = true;
+            }
+        }
+
+        // [임시 디버그 - 중력이 안 먹는 것처럼 보이는 Awake 블록 조사용] 지지대가 없는데(=중력을 받아
+        // 계속 떨어지고 있어야 함) 거의 안 움직이는 Awake 블록이 있으면, 매 프레임 위치/속도를 남겨서
+        // Integrate/ApplyGravity가 실제로 도는지, 뭔가 매 프레임 속도를 도로 0으로 죽이는지 확인한다.
+        // 원인을 찾으면 지워도 된다.
+        if (!hasSupport && block->GetSpeedSquared() < 1.0f)
+        {
+            FILE* file = nullptr;
+            fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
+            if (file != nullptr)
+            {
+                Vector2 pos = block->GetRenderPosition();
+                std::fprintf(file, "[TrySleepAll/STUCK-NO-SUPPORT] block=%p pos=(%.1f,%.1f) angle=%.2f speed=%.2f angVel=%.2f activeTimer=%.2f\n",
+                    block, pos.x, pos.y, block->GetAngle(), std::sqrt(block->GetSpeedSquared()), block->GetAngularVelocity(), block->GetActiveTimer());
+                std::fclose(file);
             }
         }
 

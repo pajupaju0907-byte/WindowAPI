@@ -30,6 +30,13 @@ public:
     // 렌더타겟이 유실됐을 때(EndDraw가 D2DERR_RECREATE_TARGET을 반환) 같은 크기로 다시 만든다
     void RecreateRenderTarget();
 
+    // [중요] Direct2D/DirectWrite/WIC ComPtr들을 CoUninitialize() 전에 명시적으로 해제한다.
+    // 이 멤버들은 함수 지역 정적 변수(WindowManager::instance)에 속해서, 이걸 안 부르면 프로그램
+    // 종료 시 CRT가 정적 소멸자를 정리하는 시점(=wWinMain이 CoUninitialize까지 마치고 반환한 뒤)에
+    // Release()가 호출된다 — 이미 COM이 죽은 뒤라 그 자리에서 크래시가 난다
+    // (ResourceManager::Shutdown()이 비트맵에 대해 하는 것과 같은 이유, 같은 처리).
+    void Shutdown();
+
 private:
     WindowManager() = default;
     ~WindowManager() = default;

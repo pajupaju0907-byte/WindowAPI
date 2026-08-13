@@ -21,6 +21,14 @@ private:
     // 발판 옆(밟을 땅이 없는) 데스존을 반투명 빨간 사각형으로 표시한다. F1 디버그와 무관하게 항상 그려진다.
     void RenderDeathZones(ID2D1RenderTarget* renderTarget);
 
+    // 낙하 중인 블럭이 착지할 위치까지의 경로를 반투명 흰색으로 표시한다. 블럭을 그리기 전에 호출해서
+    // 항상 블럭 뒤에 깔리게 한다.
+    void RenderDropGuide(ID2D1RenderTarget* renderTarget);
+
+    // 화면 오른쪽 위 모서리에 다음에 나올 블럭 미리보기(Next.png 판넬 + 축소된 블럭 모양)를 그린다.
+    // 카메라 변환과 무관한 화면 고정 HUD라 DrawHeightRecord처럼 그린다.
+    void RenderNextBlockPreview(ID2D1RenderTarget* renderTarget);
+
     // Block.png(색깔별 정사각형이 가로로 이어진 시트)에서 slotIndex번째 칸만 잘라 쓸 소스 사각형(원본 픽셀 좌표)
     D2D1_RECT_F GetBlockColorSourceRect(int slotIndex) const;
 

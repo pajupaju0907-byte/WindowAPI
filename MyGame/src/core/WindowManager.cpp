@@ -231,3 +231,11 @@ IWICImagingFactory* WindowManager::GetWicFactory() const
 {
 	return m_wicFactory.Get();
 }
+
+void WindowManager::Shutdown()
+{
+	m_renderTarget.Reset();
+	m_writeFactory.Reset();
+	m_wicFactory.Reset();
+	m_d2dFactory.Reset();
+}
