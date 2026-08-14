@@ -4,6 +4,7 @@
 #include "../util/Types.h"
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 class Block;
 
@@ -33,8 +34,18 @@ public:
 
     // cellPosition(월드 좌표, TILE_SIZE 정사각형 기준)이 바닥이나 self가 아닌 다른 블럭 위에 "안정적으로"
     // 얹혀 있는지 판정한다(칸 중심이 실제로 그 위에 있어야 함 — 엄격). Sleep 가능 여부/붕괴 판정처럼
-    // "여기서 잠들어도/버텨도 되는가"를 결정하는 곳에서만 쓴다.
+    // "여기서 잠들어도/버텨도 되는가"를 결정하는 곳에서만 쓴다. GetCellSupportRange의 지지 여부만 쓰는
+    // 얇은 래퍼 — 지지 범위(겹치는 폭)까지 필요하면 GetCellSupportRange를 직접 쓸 것.
     bool IsCellSupported(Block* block, int cellIndex) const;
+
+    // [경계값 버그 방지 — 실전 확인됨] IsCellSupported와 같은 기준으로 지지 여부를 판정하되, 지지된다면
+    // 그 칸의 전체 폭이 아니라 "바닥/아래 블록과 실제로 겹치는 부분"만 outSupportMinX/MaxX로 돌려준다.
+    // 칸이 발판이나 아래 블록의 가장자리에 절반쯤만 걸쳤을 때(칸 중심은 지지 쪽에 있지만 칸 자체는 절반이
+    // 허공 위) 칸의 전체 폭을 지지 범위에 다 넣으면, 실제보다 지지 기반이 넓게(허공 쪽으로) 잡혀서 무게중심이
+    // 그 안에 들어와버려 명백히 넘어져야 할 상황에서도 안 넘어지는 원인이 된다 — 4칸 중 3칸이 기둥으로
+    // 곧게 서 있고 발만 옆으로 삐져나온 모양이 착지 위치에 따라 이렇게 잘못 안정 판정되는 걸 확인했다.
+    // ComputeSupportDebugInfo(진짜 지지 범위/무게중심 비교가 필요한 곳)만 이 버전을 쓴다.
+    bool GetCellSupportRange(Block* block, int cellIndex, float& outSupportMinX, float& outSupportMaxX) const;
 
     // [마찰 사각지대 방지] IsCellSupported보다 느슨하게, 칸이 바닥/다른 블럭과 조금이라도 겹치면 true를
     // 반환한다. 회전한 칸이 모서리로만 걸친 경우(IsCellSupported는 false) 이 함수는 true가 되는데, 이게
@@ -43,12 +54,18 @@ public:
     // 튕기는 게 감쇠 없이 반복되며 영원히 떨린다. 마찰은 이 느슨한 기준으로 걸어서 떨림 자체를 죽이고,
     // "진짜 안정적인지/넘어질지"는 여전히 IsCellSupported(엄격)로 따로 판단한다.
     bool IsCellTouchingAnySupport(Block* block, int cellIndex) const;
-    // [무게중심 보조 토크] block의 무게중심(x)이 지지된 칸들의 가로 범위를 벗어났으면
-    // Block::ApplyBalanceTorque로 작은 보조 각가속도를 건다. 실제 회전은 여전히 충돌 임펄스가 담당하고
-    // 이건 그게 시작되도록 살짝 떠미는 역할일 뿐이라, 균형 잡힌 경우엔 아무것도 안 한다(감쇠 없음)
+    // [무게중심 실제 토크] block의 무게중심(x)이 지지된 칸들의 가로 범위를 벗어났으면
+    // Block::ApplyGravityTorque로 pivot(지지 가장자리) 기준 진짜 중력 토크를 매 프레임 걸어준다.
+    // 기울어진 각도가 MAX_TOPPLE_ANGLE을 넘어서야 실제로 BeginToppling() 상태 전환이 일어나고,
+    // 균형 잡힌 경우엔 아무것도 안 한다.
     // [성능] childrenOf는 이번 물리 스텝에서 BuildRestingChildrenMap()으로 한 번만 계산해서 매 블럭 호출에
     // 재사용하는 "누가 누구 위에 얹혀 있는지" 맵이다 — 매번 새로 스캔하지 않기 위한 것.
-    void ResolveBalance(Block* block, float deltaTime, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf);
+    // [지지대 우선 붕괴] 반환값은 "이번 프레임에 이 블록이 불균형으로 판정돼 처리(토크 적용/포기 등)됐는지"
+    // — Step()이 true를 받으면 이 블록 위에 얹힌 모든 블록(재귀)을 이번 프레임엔 각자 따로 불균형 검사를
+    // 안 하도록 건너뛴다. "지지대가 먼저 무너지는 게 맞다"는 설계 결정에 따른 것 — 아래(더 근본적인 지지대)가
+    // 이미 불안정을 처리 중이면, 그 위에 얹힌 것들은 자기 좁은 접촉면만 보고 따로 넘어지지 않고 아래의
+    // 붕괴에 묻어간다. 아래가 실제로 넘어지면(Toppling) 다음 프레임에 지지를 잃었다고 자연히 감지해서 반응한다.
+    bool ResolveBalance(Block* block, float deltaTime, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf);
 
     // Toppling 상태인 블럭 중 화면 아래로 완전히 벗어난 것들을 BlockManager에서 제거
     void RemoveToppledBlocks();
@@ -109,4 +126,11 @@ private:
     // "이 블럭이 떠받치고 있는 전체 무더기"의 무게중심으로 판정하게 하려고 필요하다 —
     // 안 그러면 위에 삐딱하게 얹힌 블럭만 넘어지고 밑을 받치는 블럭은 자기 발판만 보고 멀쩡하다고 착각한다.
     void AccumulateSupportedMass(Block* base, std::vector<Block*>& visited, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf, float& outTotalMass, float& outWeightedX) const;
+
+    // [지지대 우선 붕괴] base가 이번 프레임에 불균형으로 처리됐을 때(ResolveBalance가 true를 반환),
+    // base 위에 (직접/간접으로) 얹힌 모든 블록을 재귀로 찾아서 outDeferred에 추가한다. Step()이 이
+    // 집합에 있는 블록은 이번 프레임 자기 몫의 개별 ResolveBalance 호출을 건너뛴다 — "지지대가 먼저
+    // 무너지는 게 맞다"는 설계 결정에 따라, 아래(더 근본적인 지지대)가 이미 불안정을 처리 중이면 위에
+    // 얹힌 것들은 자기 좁은 접촉면만 보고 따로 넘어지지 않고 아래의 붕괴에 묻어가게 한다.
+    void MarkDescendantsDeferred(Block* base, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf, std::unordered_set<Block*>& outDeferred) const;
 };

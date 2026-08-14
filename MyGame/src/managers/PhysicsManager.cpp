@@ -37,7 +37,7 @@ namespace
 				if (corners[c].y > bottomY) bottomY = corners[c].y;
 			}
 			float centerX = (minX + maxX) * 0.5f;
-			bool isOverFloorPlatform = centerX > Constants::FLOOR_LEFT_X && centerX < Constants::FLOOR_RIGHT_X;
+			bool isOverFloorPlatform = centerX >= Constants::FLOOR_LEFT_X && centerX <= Constants::FLOOR_RIGHT_X;
 			bool isNearFloorHeight = bottomY >= Constants::FLOOR_TOP_Y - Constants::SUPPORT_CHECK_TOLERANCE &&
 				bottomY <= Constants::FLOOR_TOP_Y + Constants::SUPPORT_CHECK_TOLERANCE;
 			std::fprintf(file, "  cell%d minX=%.1f maxX=%.1f centerX=%.1f bottomY=%.1f floorTopY=%.1f floorX=[%.1f,%.1f] overFloorX=%d nearFloorY=%d\n",
@@ -45,6 +45,20 @@ namespace
 				isOverFloorPlatform ? 1 : 0, isNearFloorHeight ? 1 : 0);
 		}
 		std::fclose(file);
+	}
+
+	// [경사면 미끄러짐 허용] 이 블럭의 각도가 90도 배수(0/90/180/270...)에서 SUPPORT_SURFACE_MAX_TILT_DEGREES
+	// 이내인지 — 즉 윗면이 실제로 평평한 가로 선반 역할을 할 수 있는 각도인지 본다. Constants.h의
+	// SUPPORT_SURFACE_MAX_TILT_DEGREES 주석 참고.
+	bool IsNearAxisAlignedAngle(float angleDegrees)
+	{
+		float normalized = std::fmod(angleDegrees, 90.0f);
+		if (normalized < 0.0f)
+		{
+			normalized += 90.0f;
+		}
+		float distanceFromAxis = (std::min)(normalized, 90.0f - normalized);
+		return distanceFromAxis <= Constants::SUPPORT_SURFACE_MAX_TILT_DEGREES;
 	}
 }
 
@@ -144,15 +158,38 @@ void PhysicsManager::Step(float deltaTime)
     // 재사용한다 — 예전엔 블록마다(그리고 그 안에서 재귀할 때마다) 전체 블록을 매번 다시 스캔해서,
     // 탑이 커질수록 비용이 세제곱에 가깝게 늘어났다.
     std::unordered_map<Block*, std::vector<Block*>> restingChildren = BuildRestingChildrenMap();
+    // [지지대 우선 붕괴] GetAllBlocks()는 스폰(착지) 순서로 도는데, 이게 곧 "아래(먼저 놓인) 블록 먼저,
+    // 위(나중에 놓인) 블록 나중"이다 — 그래서 이 루프에서 아래 블록의 ResolveBalance가 항상 위 블록보다
+    // 먼저 돈다. 아래가 이번 프레임에 불균형으로 처리되면, 그 위에 얹힌 모든 블록(재귀)을 deferredBlocks에
+    // 표시해서 이번 프레임엔 자기 몫의 개별 불균형 검사를 건너뛰게 한다 — "지지대가 먼저 무너지는 게
+    // 맞다"는 설계 결정에 따라, 위에 얹힌 것들이 자기 좁은 접촉면만 보고 따로 넘어지는 대신 아래의
+    // 붕괴에 묻어가게 하기 위함이다. 아래가 실제로 넘어지면(Toppling) IsCellSupported가 더 이상 그
+    // 블록을 지지 제공자로 인정하지 않으므로, 다음 프레임에 위 블록들이 "지지를 잃었다"를 스스로
+    // 감지해서 자연스럽게 반응한다.
+    std::unordered_set<Block*> deferredBlocks;
     for (Block* block : BlockManager::GetInstance().GetAllBlocks())
     {
         PhysicsState state = block->GetPhysicsState();
         if (state != PhysicsState::Awake && state != PhysicsState::Sleeping) continue;
 
-        ResolveBalance(block, deltaTime, restingChildren);
+        if (deferredBlocks.find(block) == deferredBlocks.end())
+        {
+            bool wasImbalanced = ResolveBalance(block, deltaTime, restingChildren);
+            if (wasImbalanced)
+            {
+                MarkDescendantsDeferred(block, restingChildren, deferredBlocks);
+            }
+        }
 
-        // ResolveBalance 외부적인 요인(충돌 등)으로 각도가 꺾인 경우의 안전장치
-        if (block->GetPhysicsState() != PhysicsState::Toppling && std::fabs(block->GetAngle()) >= Constants::MAX_TOPPLE_ANGLE)
+        // ResolveBalance 외부적인 요인(충돌 등)으로 각도가 꺾인 경우의 안전장치. defer 여부와 무관하게
+        // 항상 확인한다 — 실제로 충돌 등으로 이미 각도가 넘어간 건 아래 블록 처리 순서와 상관없이 반영돼야 한다.
+        // [절대각이 아니라 기준각 대비 — 실전에서 발견된 무한 진동 버그 수정] GetAngle()의 절대값이 아니라
+        // GetRestAngleReference()(마지막으로 안정 확인된 각도)에서 얼마나 더 돌았는지를 봐야 한다 — 안
+        // 그러면 90/135도로 완전히 넘어져서 옆으로 누운 채 정상적으로 안정된 블록도 절대각이 여전히
+        // 40도를 넘는다는 이유만으로 여기 계속 걸려서, SettleToppledBlocks가 Awake로 돌려보내자마자
+        // 바로 이 줄이 다시 Toppling으로 되돌리는 걸 매 프레임 무한 반복하며 제자리에서 떤다.
+        float angleFromRest = std::fabs(block->GetAngle() - block->GetRestAngleReference());
+        if (block->GetPhysicsState() != PhysicsState::Toppling && angleFromRest >= Constants::MAX_TOPPLE_ANGLE)
         {
             block->BeginToppling();
         }
@@ -183,7 +220,8 @@ void PhysicsManager::ResolveFloorCollision(Block* block)
 
     // [접촉 다각화] 첫 번째 점만 위치 보정을 하고(penetration 그대로), 두 번째 점은 이미 밀어낸 뒤라
     // penetration을 0으로 넘겨서 속도/토크 반응만 추가로 준다 — 면과 면이 맞닿았을 때 양 끝을 동시에
-    // 붙잡아서 미세 회전(떨림)이 사라진다.
+    // 붙잡아서 미세 회전(떨림)이 사라진다. (한때 이 두 호출을 하나로 합쳐 "동시 처리"했다가, 진짜
+    // 충돌에서 임펄스가 과도하게 커지는 폭주 버그로 되돌렸다 — Block::ResolveRigidCollision 주석 참고.)
     block->ResolveRigidCollision(pair.contactPoints[0], pair.normal, pair.penetration);
     block->ResolveRigidCollision(pair.contactPoints[1], pair.normal, 0.0f);
 }
@@ -297,6 +335,13 @@ void PhysicsManager::GetCellSupportBounds(Block* block, int cellIndex, float& ou
 }
 bool PhysicsManager::IsCellSupported(Block* block, int cellIndex) const
 {
+    float supportMinX = 0.0f;
+    float supportMaxX = 0.0f;
+    return GetCellSupportRange(block, cellIndex, supportMinX, supportMaxX);
+}
+
+bool PhysicsManager::GetCellSupportRange(Block* block, int cellIndex, float& outSupportMinX, float& outSupportMaxX) const
+{
     float cellTopY = 0.0f;
     float cellBottomY = 0.0f;
     float cellMinX = 0.0f;
@@ -309,9 +354,25 @@ bool PhysicsManager::IsCellSupported(Block* block, int cellIndex) const
     // 넓게 잡혀서 명백히 넘어져야 할 상황에서도 안 넘어지게 된다
     bool isNearFloorHeight = cellBottomY >= Constants::FLOOR_TOP_Y - Constants::SUPPORT_CHECK_TOLERANCE &&
         cellBottomY <= Constants::FLOOR_TOP_Y + Constants::SUPPORT_CHECK_TOLERANCE;
-    bool isOverFloorPlatform = cellCenterX > Constants::FLOOR_LEFT_X && cellCenterX < Constants::FLOOR_RIGHT_X;
+    // [경계값 버그 — 실전 확인됨] 반칸(서브셀) 단위로 착지하는 블록은 칸 중심이 FLOOR_LEFT_X/RIGHT_X와
+    // 정확히 같은 값(예: 144.0)이 되는 경우가 실제로 생긴다. 예전엔 여기가 엄격한 부등호(>/<)라
+    // 정확히 경계에 걸린 칸은 "지지 안 됨"으로 판정돼서, 눈에는 바닥 위에 서 있는데도 IsCellSupported가
+    // 영원히 false를 반환 — Sleep도 못 하고, ResolveBalance(불균형 판정)도 아예 못 타고(지지가 없다고
+    // 보니까), 대신 매 프레임 중력에 떨어졌다가 바닥 충돌로 밀려나오는 걸 반복하며 그 충돌 반응의 미세한
+    // 비대칭이 누적돼 서서히 엉뚱한 각도로 기울어졌다. 경계에 정확히 걸친 것도 "지지된다"고 보도록
+    // 이상(>=)/이하(<=)로 완화한다.
+    bool isOverFloorPlatform = cellCenterX >= Constants::FLOOR_LEFT_X && cellCenterX <= Constants::FLOOR_RIGHT_X;
     if (isNearFloorHeight && isOverFloorPlatform)
     {
+        // [경계값 버그 2 — 실전 확인됨] 칸 중심이 지지 쪽에 있다고 해서 칸 "전체 폭"을 지지 범위에 다
+        // 넣으면 안 된다 — 칸이 발판 가장자리에 절반쯤 걸친 경우(중심은 발판 위, 나머지 절반은 허공),
+        // 칸의 전체 폭을 지지 범위로 치면 실제보다 넓게(허공 쪽으로) 잡혀서 무게중심이 그 안에 들어와
+        // 버린다. 4칸 중 3칸이 기둥으로 곧게 서고 발 하나만 옆으로 삐져나온 모양이 착지 위치에 따라
+        // 이렇게 "명백히 넘어져야 하는데 안 넘어지는" 것으로 실전 확인됐다. 그래서 칸의 폭이 아니라
+        // 발판과 실제로 겹치는 부분(교집합)만 돌려준다.
+        outSupportMinX = (std::max)(cellMinX, Constants::FLOOR_LEFT_X);
+        outSupportMaxX = (std::min)(cellMaxX, Constants::FLOOR_RIGHT_X);
+
         // [임시 디버그 - 왜 허공에서 Sleeping인지 조사용]
         if (block->GetPhysicsState() == PhysicsState::Sleeping)
         {
@@ -336,9 +397,14 @@ bool PhysicsManager::IsCellSupported(Block* block, int cellIndex) const
     {
         // Toppling(무너져서 낙하 중)인 블럭은 그 자체가 안 안정적인 상태라, 다른 블럭이 그 위에
         // 안정적으로 얹혀 있다고 볼 수 없다 — 지지 제공자로 인정하지 않는다
+        // [경사면 미끄러짐 허용] 이 지지 판정 자체가 회전을 무시하고 "평평한 선반"으로 근사하는
+        // 방식이라, 많이 기울어진 블럭까지 이걸로 지지 제공자 취급하면 실제로는 모서리 하나에 걸친
+        // 것도 안정적으로 얼어붙는다(Constants::SUPPORT_SURFACE_MAX_TILT_DEGREES 주석 참고). 축
+        // 정렬에서 크게 벗어난 블럭은 후보에서 빼고, 실제 회전 인식 충돌/마찰 물리로 넘긴다.
         bool otherCanSupport = other != block &&
             other->GetPhysicsState() != PhysicsState::Airborne &&
-            other->GetPhysicsState() != PhysicsState::Toppling;
+            other->GetPhysicsState() != PhysicsState::Toppling &&
+            IsNearAxisAlignedAngle(other->GetAngle());
         if (!otherCanSupport)
         {
             continue;
@@ -359,12 +425,21 @@ bool PhysicsManager::IsCellSupported(Block* block, int cellIndex) const
 
             // 내 칸의 바닥이 맞닿아야 하는 건 상대 칸의 "바닥"이 아니라 "윗면"이다 — 반대로 비교하면
             // 다른 블록 위에 쌓인 블록은 지지 판정이 늘 실패해서 절대 Sleep에 못 들어간다
-            bool centerOverlapsOther = cellCenterX > otherMinX && cellCenterX < otherMaxX;
+            // [경계값 버그 3 — 바닥 케이스와 똑같은 버그가 블록 간 지지에도 있었다] 여기가 엄격한
+            // 부등호(>/<)였다 — 반칸(서브셀) 단위로 착지하면 내 칸 중심이 아래 블록의 모서리(otherMinX/
+            // otherMaxX)와 정확히 같은 값이 되는 경우가 실제로 자주 생기는데, 그때 "지지 안 됨"으로
+            // 판정돼버렸다. FLOOR 케이스는 이미 고쳤는데 이 BLOCK 케이스는 놓쳤던 것 — 반칸 단위 착지가
+            // "이상하게 작동"하는 남은 원인의 핵심이다. 경계에 정확히 걸친 것도 지지되는 것으로 본다.
+            bool centerOverlapsOther = cellCenterX >= otherMinX && cellCenterX <= otherMaxX;
             bool isRestingOnOther = cellBottomY >= otherTopY - Constants::SUPPORT_CHECK_TOLERANCE &&
                 cellBottomY <= otherTopY + Constants::SUPPORT_CHECK_TOLERANCE;
 
             if (centerOverlapsOther && isRestingOnOther)
             {
+                // [경계값 버그 2] 위 바닥 케이스와 같은 이유로, 아래 블록과 실제로 겹치는 부분만 돌려준다.
+                outSupportMinX = (std::max)(cellMinX, otherMinX);
+                outSupportMaxX = (std::min)(cellMaxX, otherMaxX);
+
                 // [임시 디버그 - 왜 허공에서 Sleeping인지 조사용]
                 if (block->GetPhysicsState() == PhysicsState::Sleeping)
                 {
@@ -466,7 +541,11 @@ bool PhysicsManager::RestsOnBlock(Block* upper, Block* lower) const
             GetCellSupportBounds(lower, j, lowerTopY, lowerBottomY, lowerMinX, lowerMaxX);
 
             // 여기도 마찬가지로 upper의 바닥은 lower의 "윗면"과 비교해야 한다
-            bool centerOverlapsLower = cellCenterX > lowerMinX && cellCenterX < lowerMaxX;
+            // [경계값 버그 3 — GetCellSupportRange와 같은 버그] 반칸 단위 착지 시 cellCenterX가
+            // lowerMinX/lowerMaxX와 정확히 같아지는 경우, 엄격한 부등호면 "얹혀있지 않음"으로 판정돼서
+            // childrenOf 맵에 아예 안 잡히고(위 블록이 이 아래 블록의 자식으로 등록조차 안 됨), 결합
+            // 무게중심 계산에서 완전히 빠져버린다 — 이게 반칸 단위 무게 인식이 특히 이상했던 원인 중 하나.
+            bool centerOverlapsLower = cellCenterX >= lowerMinX && cellCenterX <= lowerMaxX;
             bool isRestingOnLower = cellBottomY >= lowerTopY - Constants::SUPPORT_CHECK_TOLERANCE &&
                 cellBottomY <= lowerTopY + Constants::SUPPORT_CHECK_TOLERANCE;
 
@@ -512,7 +591,12 @@ void PhysicsManager::AccumulateSupportedMass(Block* base, std::vector<Block*>& v
     float& outTotalMass, float& outWeightedX) const
 {
     outTotalMass += base->GetMass();
-    outWeightedX += base->GetMass() * (base->GetRenderPosition() + base->GetCenterOfMassLocal() * Constants::TILE_SIZE).x;
+    // [무게 전달 — 콜리전과 안 싸우는 버전] 실제 m_position 대신 GetEffectiveWeightPositionWorld()를
+    // 쓴다 — 기울어지는 중인 블록은 순수 회전만으로는 실제 위치가 거의 안 바뀌어서, 실제 위치만 보면
+    // 위쪽이 아무리 기울어도 아래 블록이 전혀 못 느낀다. 이 함수는 m_position/충돌/렌더링은 전혀
+    // 안 건드리고 "pivot을 축으로 지금 각도까지 진짜 swing했다면 어디 있을지"만 계산해서 돌려주므로,
+    // 여기 무게 합산 용도로만 안전하게 쓸 수 있다(Block.h의 설명 참고).
+    outWeightedX += base->GetMass() * base->GetEffectiveWeightPositionWorld().x;
 
     auto it = childrenOf.find(base);
     if (it == childrenOf.end())
@@ -535,30 +619,50 @@ void PhysicsManager::AccumulateSupportedMass(Block* base, std::vector<Block*>& v
     }
 }
 
+void PhysicsManager::MarkDescendantsDeferred(Block* base, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf, std::unordered_set<Block*>& outDeferred) const
+{
+    auto it = childrenOf.find(base);
+    if (it == childrenOf.end())
+    {
+        return;
+    }
+
+    for (Block* child : it->second)
+    {
+        // insert()가 true(=새로 들어감)를 돌려줄 때만 재귀 — 이미 있으면 그 아래도 이미 처리된 것이므로
+        // 사이클/중복 경로가 있어도 무한 재귀 없이 안전하다.
+        if (outDeferred.insert(child).second)
+        {
+            MarkDescendantsDeferred(child, childrenOf, outDeferred);
+        }
+    }
+}
+
 bool PhysicsManager::ComputeSupportDebugInfo(Block* block, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf, float& outMinX, float& outMaxX, float& outCombinedComX) const
 {
     bool hasSupport = false;
 
     for (int i = 0; i < block->GetCellCount(); ++i)
     {
-        if (!IsCellSupported(block, i))
+        // [경계값 버그 방지] 칸의 전체 폭이 아니라 실제로 겹치는 지지 범위만 받는다 — IsCellSupported+
+        // GetCellSupportBounds를 따로 쓰면 칸이 발판 가장자리에 절반만 걸쳐도 전체 폭이 지지 범위에
+        // 들어가버려서 무게중심 비교가 실제보다 관대해진다(GetCellSupportRange 주석 참고).
+        float cellSupportMinX = 0.0f, cellSupportMaxX = 0.0f;
+        if (!GetCellSupportRange(block, i, cellSupportMinX, cellSupportMaxX))
         {
             continue;
         }
 
-        float cellTopY = 0.0f, cellBottomY = 0.0f, cellMinX = 0.0f, cellMaxX = 0.0f;
-        GetCellSupportBounds(block, i, cellTopY, cellBottomY, cellMinX, cellMaxX);
-
         if (!hasSupport)
         {
-            outMinX = cellMinX;
-            outMaxX = cellMaxX;
+            outMinX = cellSupportMinX;
+            outMaxX = cellSupportMaxX;
             hasSupport = true;
         }
         else
         {
-            if (cellMinX < outMinX) outMinX = cellMinX;
-            if (cellMaxX > outMaxX) outMaxX = cellMaxX;
+            if (cellSupportMinX < outMinX) outMinX = cellSupportMinX;
+            if (cellSupportMaxX > outMaxX) outMaxX = cellSupportMaxX;
         }
     }
 
@@ -586,7 +690,7 @@ bool PhysicsManager::ComputeSupportDebugInfo(Block* block, float& outMinX, float
     return ComputeSupportDebugInfo(block, childrenOf, outMinX, outMaxX, outCombinedComX);
 }
 
-void PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf)
+bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf)
 {
     float supportMinX = 0.0f;
     float supportMaxX = 0.0f;
@@ -599,7 +703,11 @@ void PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::un
 			block->WakeUp();
 		}
 
-        return;
+        // 지지 자체가 없는 건 "지지는 있는데 균형이 깨짐"과는 다른 상황(자유낙하)이라, 끼임 판정과는
+        // 무관하다 — 나중에 착지해서 다시 지지가 생기면 완전히 새 시도로 취급되게 초기화해둔다.
+        block->ResetImbalanceTimer();
+
+        return false;
     }
 
     // [임시 디버그 - 왜 안 넘어지는지 조사용] 처음 300번 호출까지만 supportMinX/MaxX/centerOfMassX를 파일로 남긴다.
@@ -620,38 +728,75 @@ void PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::un
         }
     }
 
-    // [트리키 타워 붕괴 판정]
-    // 서서히 각도를 기울이는 기존 ApplyBalanceTorque 방식 대신,
-    // 무게중심이 지지대를 벗어나는 '즉시' Toppling 상태로 만들고 강한 회전력을 줍니다.
+    // [진짜 중력 토크] 순간적으로 각속도를 꽂아넣던 예전 방식(TUMBLE_ANGULAR_VELOCITY 킥) 대신, 무게중심이
+    // 지지 범위를 벗어난 채로 있는 한 매 프레임 실제 중력 토크(ApplyGravityTorque)를 계속 걸어준다.
+    // 처음엔 지렛대(pivot~무게중심 거리)가 짧아 천천히 기울다가, 기울수록 지렛대가 길어지며 점점 빨리
+    // 넘어가는 진짜 물리가 된다. 완전히 못 버티는 각도(MAX_TOPPLE_ANGLE)를 넘어서야 Toppling으로 확정한다.
     // [칼날 위 균형 방지] 가장자리를 넘어야(구식) 불안정으로 보는 대신, 가장자리에서 안쪽으로
     // IMBALANCE_DEADZONE만큼도 못 들어와 있으면(가장자리에 걸치기만 해도) 불안정으로 본다 —
     // 지지 칸이 하나뿐이고 무게중심이 그 가장자리에 정확히 걸리는 칼날 위 균형(예: S자를 세로로 세워
     // 모서리 하나로만 받치는 경우)까지 "가장자리를 안 넘었으니 안정"으로 영원히 통과하는 걸 막는다.
-    if (centerOfMassX < supportMinX + Constants::IMBALANCE_DEADZONE || centerOfMassX > supportMaxX - Constants::IMBALANCE_DEADZONE)
+    bool isImbalanced = centerOfMassX < supportMinX + Constants::IMBALANCE_DEADZONE ||
+        centerOfMassX > supportMaxX - Constants::IMBALANCE_DEADZONE;
+
+    if (!isImbalanced)
     {
-        // [무한 재넘어짐 방지] 옆 블록 등에 막혀서 실제로는 못 넘어가는 블록은, SettleToppledBlocks가
-        // Awake로 돌려보내자마자 여기서 곧바로 다시 imbalance로 판정돼 BeginToppling이 반복된다 —
-        // 매번 새 TUMBLE_ANGULAR_VELOCITY와 새 피벗 고정이 걸리면서 제자리에서 계속 진동(퉁퉁 튀는
-        // 것처럼 보임)한다. Sleep 없이 이 재넘어짐이 MAX_CONSECUTIVE_TOPPLE_COUNT번을 넘으면, 물리적으로
-        // 완전히 안정된 상태가 아니어도 그 자리에서 강제로 멈춰서 무한 진동을 끊는다.
-        if (block->GetConsecutiveToppleCount() >= Constants::MAX_CONSECUTIVE_TOPPLE_COUNT)
-        {
-            block->ForceStabilize();
-            return;
-        }
+        // 균형이 돌아왔으면 불균형 지속시간과 "끼임" 표시를 같이 초기화한다 — 다음에 다시 불균형이
+        // 감지되면 완전히 새 시도로 취급한다.
+        block->ResetImbalanceTimer();
+        return false;
+    }
 
-        // 무게중심이 빠진 방향으로 순간적인 각속도 부여 (휙! 넘어감)
-        // Constants::TUMBLE_ANGULAR_VELOCITY로 세기를 조절할 수 있다.
-        // [화면 좌표계(Y 아래로 증가) 기준] RotateLocalPointToWorld의 회전 공식으로는 양수 각도가
-        // 시계방향이라, 무게중심이 오른쪽으로 벗어났을 때(오른쪽으로 넘어가야 함) 양수를 줘야
-        // 오른쪽이 아래로 내려가는 방향으로 돈다. 반대로 왼쪽으로 벗어났으면 음수(반시계).
-        float tumbleSpin = (centerOfMassX < supportMinX) ? -Constants::TUMBLE_ANGULAR_VELOCITY : Constants::TUMBLE_ANGULAR_VELOCITY;
+    // [무한 재시도 방지 — 실전에서 발견된 버그] 지난번에 같은(안 풀린) 불균형 때문에 이미 한 번
+    // TOPPLE_STUCK_TIMEOUT을 다 채우고 ForceStabilize된 적이 있으면, 지지 상황이 안 바뀐 채로 그대로
+    // 둔다 — 다시 깨워봤자 또 같은 시간을 들여 같은 결론(끼임)에 도달할 뿐이고, 매 프레임 재시도하면
+    // Sleep<->WakeUp이 무한 반복된다(physics_debug.log에서 확인됨). 콜리전 등 다른 이유로 WakeUp되면
+    // 이 판정과 무관하게 다음 프레임에 지지 상황이 새로 평가된다.
+    if (block->IsWedged())
+    {
+        // 여전히 안 풀린 불균형 상태이므로 true — 위에 얹힌 것들은 계속 이 블록의 (멈춘) 붕괴에 묻어간다.
+        return true;
+    }
 
-        // [넘어짐 피벗 고정] 무게중심이 벗어난 방향(넘어가는 방향)의 반대쪽, 즉 지지 범위에서 그 방향의
-        // 가장자리를 축으로 삼는다. 그 가장자리를 실제로 담당하는 지지 칸을 찾아서 그 칸의 바닥 Y를
-        // 피벗의 Y로 쓴다 — 이걸 SetTopplePivot에 넘겨서, 넘어가기 시작한 직후 잠깐은 이 모서리가
-        // 허공으로 붕 뜨지 않고 그 자리에 고정된 채로 회전하게 한다.
-        float pivotX = (tumbleSpin > 0.0f) ? supportMaxX : supportMinX;
+    // 이 지속시간(m_imbalanceTimer)은 TrySleepAll이 "지금 한창 넘어지는 중"인 블록을 각속도 임계값
+    // 때문에 섣불리 재우거나 강제 정지시키지 않도록 참고한다 — 안 그러면 명백히 넘어져야 할 블록이
+    // 조금씩만 진행하다 번번이 멈추고 끝내 못 넘어간다(실전 확인됨).
+    // [pivot 고정 — 실전에서 발견된 방향 오류 버그] 이번 불균형이 "새로 시작"되는 프레임(각도가 아직
+    // 거의 0에 가까울 때)인지를 먼저 판단해둔다. 매 프레임 그 순간의 회전된 발판(지지된 칸)에서 pivot을
+    // 다시 뽑으면, 회전이 진행될수록 무게중심에서 먼 발판(특히 세로로 긴 I자처럼)이 무게중심을 축으로
+    // 옆으로 크게 휩쓸리면서 pivot 선택 자체가 뒤집힐 수 있다 — 우연한 미세한 초기 흔들림 방향이
+    // "이 방향이 맞다"고 스스로를 강화하는 피드백 루프가 되어, 실제로는 반대쪽으로 넘어가야 할 블록이
+    // 그 흔들림 방향 그대로 가속돼버린다(I자 블록이 반대로 넘어가는 것으로 확인됨). 그래서 pivot은
+    // 에피소드가 시작되는 이 한 프레임에만 새로 계산하고, 이후로는 각도가 얼마나 돌든 같은 pivot을 쓴다.
+    bool isNewImbalanceEpisode = block->GetImbalanceTimer() <= 0.0f;
+    block->AdvanceImbalanceTimer(deltaTime);
+
+    // [잠든 채로 토크만 쌓이는 것 방지] Sleeping 블럭은 Step() 1단계(Integrate)를 안 타서 m_angle이
+    // 갱신되지 않는다 — 여기서 WakeUp() 없이 ApplyGravityTorque만 걸면 m_angularVelocity가 화면엔
+    // 안 보이는 채로 계속 쌓이다가, 나중에 뭔가(충돌 등) 딴 이유로 깨어나는 순간 그 쌓인 각속도가
+    // 한꺼번에 반영되며 또 "휙" 튀어버린다. 불균형을 감지한 그 즉시 깨워서, 다음 프레임부터 Integrate가
+    // 실제로 돌게 한다.
+    if (block->GetPhysicsState() == PhysicsState::Sleeping)
+    {
+        block->WakeUp();
+    }
+
+    Vector2 pivot;
+    if (isNewImbalanceEpisode)
+    {
+        // [화면 좌표계(Y 아래로 증가) 기준] 무게중심이 벗어난 방향(넘어가는 방향)의 반대쪽, 즉 지지
+        // 범위에서 그 방향의 가장자리를 pivot으로 삼는다. 그 가장자리를 실제로 담당하는 지지 칸을 찾아서
+        // 그 칸의 바닥 Y를 피벗의 Y로 쓴다.
+        // [반칸 걸침 블록이 자꾸 오른쪽으로만 넘어가던 버그 수정] 예전엔 여기가 `centerOfMassX >=
+        // supportMinX`였는데, 이건 위 isImbalanced 판정의 왼쪽 조건(`< supportMinX + DEADZONE`)과
+        // 기준이 다르다 — 무게중심이 DEADZONE 안쪽(예: supportMinX보다 1px만 큰 값)에 있어서 "왼쪽으로
+        // 불안정"으로 막 판정됐어도, `>= supportMinX` 자체는 참이라 tippingRight가 true가 돼버려서
+        // 실제로는 왼쪽으로 넘어가야 할 블록이 오른쪽으로 넘어갔다. 반칸(서브셀) 단위로 착지한 블록은
+        // 지지 범위 경계에 딱 걸치는 경우가 많아 이 DEADZONE 안쪽 구간에 자주 들어가고, 그때마다 전부
+        // 오른쪽으로만 쏠렸던 것 — 실전에서 관찰된 "반칸 걸치면 오른쪽으로 도는 경향"과 정확히 일치한다.
+        // isImbalanced의 오른쪽 조건과 완전히 같은 기준으로 판정해야 방향이 일관된다.
+        bool tippingRight = centerOfMassX > supportMaxX - Constants::IMBALANCE_DEADZONE;
+        float pivotX = tippingRight ? supportMaxX : supportMinX;
         float pivotY = Constants::FLOOR_TOP_Y;
         for (int i = 0; i < block->GetCellCount(); ++i)
         {
@@ -661,36 +806,69 @@ void PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::un
             }
             float cellTopY = 0.0f, cellBottomY = 0.0f, cellMinX = 0.0f, cellMaxX = 0.0f;
             GetCellSupportBounds(block, i, cellTopY, cellBottomY, cellMinX, cellMaxX);
-            float edgeX = (tumbleSpin > 0.0f) ? cellMaxX : cellMinX;
+            float edgeX = tippingRight ? cellMaxX : cellMinX;
             if (std::fabs(edgeX - pivotX) < 0.01f)
             {
                 pivotY = cellBottomY;
                 break;
             }
         }
-
-        // [연쇄 붕괴 전파] block 하나만 넘어뜨린다. 예전엔 block이 떠받치던 덩어리 전체에 똑같은 각속도를
-        // 강제로 줬는데, 블록마다 무게중심/관성모멘트가 달라서 같은 각속도를 받아도 다르게 움직여야
-        // 정상이다 — 억지로 맞추려니 서로 침투했다 밀려나며 새 떨림이 생겼다. 이제는 위에 얹힌 블록들을
-        // 직접 건드리지 않는다: IsCellSupported가 Toppling 블록을 지지 제공자로 인정하지 않으므로, 다음
-        // 물리 스텝에 그 블록들이 각자 자기 지지 판정에서 "지지를 잃었다"를 스스로 감지해 개별적으로
-        // 깨어나고(Sleeping->Awake) 자연스러운 충돌로 무너진다.
-        // [재넘어짐 킥 중복 방지] 옆 블록 등에 막혀서 완전히 못 넘어가고 "살짝 넘어짐 → 피벗 고정으로
-        // 거의 원위치 복귀 → 그런데 무게중심은 여전히 살짝 벗어나 있어서 다음 프레임에 또 imbalance 판정"이
-        // 반복될 수 있다. 이때마다 TUMBLE_ANGULAR_VELOCITY를 처음부터 다시 꽂아 넣으면, 이미 있던(자연스러운)
-        // 각속도 위에 매번 인위적인 순간 가속이 덧붙어서 화면에는 계속 "팍! 팍!" 튀는 것처럼 보인다.
-        // 첫 넘어짐(GetConsecutiveToppleCount()==0, 이번 BeginToppling 호출로 1이 됨)에만 킥을 주고,
-        // 재시도부터는 이미 진행 중인 회전에 맡긴다 — 실제로 넘어가는 중이면 그대로 이어지고, 막혀서
-        // 멈춰 있으면(각속도 0에 가까움) MAX_CONSECUTIVE_TOPPLE_COUNT에 도달해 ForceStabilize가 정리한다.
-        bool isFirstTopple = block->GetConsecutiveToppleCount() == 0;
-
-        block->BeginToppling();
-        if (isFirstTopple)
-        {
-            block->AddAngularVelocity(tumbleSpin);
-        }
-        block->SetTopplePivot({ pivotX, pivotY });
+        pivot = { pivotX, pivotY };
+        block->SetImbalancePivot(pivot);
     }
+    else
+    {
+        pivot = block->GetImbalancePivot();
+    }
+
+    // [되돌림 — pivot 고정을 여기서 계속 걸어두는 건 위험한 시도였다] 무게중심 이동을 흉내내려고
+    // SetTopplePivot/ExtendPivotLock을 이 에피소드 내내 걸어봤는데, Integrate()의 pivot 고정 분기는
+    // 매 프레임 m_position을 "그 순간 각도" 하나만으로 다시 계산해버린다 — 그 사이 콜리전 해결
+    // (ResolveFloorCollision/ResolveBlockCollisions, Step()의 2단계)이 침투를 밀어내려고 넣은 위치
+    // 보정을, 바로 다음 프레임 Integrate가 통째로 덮어써서 무효로 만든다. 그러면 스윙 경로가 옆
+    // 블록과 겹칠 때마다 콜리전이 매번 밀어내려 시도하지만 다음 프레임에 또 같은 자리로 되돌아가고,
+    // 그 과정에서 매번 주입되는 각속도 임펄스만 계속 쌓여서(위치는 안 바뀌는데 각속도만 폭주) 옆
+    // 블록에 낀 채로 헛도는 블록이 나왔다(실전 확인됨 — O자 블록이 T자 위에서 겹친 채 회전만 함).
+    // 무게중심 위치가 실제로 아래 블록 계산에 반영되려면, 이 pivot 고정 override 대신 그냥 중력의
+    // 선형(위치) 성분을 평소처럼 충돌 해결에 맡기는 게 맞다 — ApplyGravityTorque는 회전만 보조하고,
+    // 위치는 이미 모든 다른 블록에 쓰는 것과 같은(그리고 이미 검증된) F=ma+충돌 임펄스 경로로 움직이게
+    // 둔다. BeginToppling() 직후의 SetTopplePivot()(짧은 0.15초 창)은 원래 의도대로 그대로 둔다.
+
+    block->ApplyGravityTorque(pivot, deltaTime);
+
+    // [연쇄 붕괴 전파] block 하나만 넘어뜨린다. block이 떠받치던 덩어리 전체에 같은 각속도를 강제로
+    // 주지 않는다 — 블록마다 무게중심/관성모멘트가 달라서 같은 각속도를 받아도 다르게 움직여야
+    // 정상이다. 위에 얹힌 블록들은 직접 건드리지 않는다: IsCellSupported가 Toppling 블록을 지지
+    // 제공자로 인정하지 않으므로, 다음 물리 스텝에 그 블록들이 각자 자기 지지 판정에서 "지지를
+    // 잃었다"를 스스로 감지해 개별적으로 깨어나고(Sleeping->Awake) 자연스러운 충돌로 무너진다.
+    // [절대각이 아니라 기준각 대비] Step()의 안전장치와 같은 이유로, 이미 기울어져 있던 기준각에서
+    // 얼마나 더 돌았는지를 본다 — 한 번 크게 넘어져서 옆으로 누운 블록이 나중에 또 살짝 불균형해질
+    // 때도 절대각이 아니라 그 눕혀진 자세를 기준으로 40도를 새로 재도록.
+    if (std::fabs(block->GetAngle() - block->GetRestAngleReference()) >= Constants::MAX_TOPPLE_ANGLE)
+    {
+        // [무한 재넘어짐 방지] 옆 블록 등에 막혀서 실제로는 못 넘어가는 블록은, SettleToppledBlocks가
+        // Awake로 돌려보내자마자 다시 토크를 받아 곧 같은 각도로 되돌아가길 반복할 수 있다. Sleep
+        // 없이 이 재확정이 MAX_CONSECUTIVE_TOPPLE_COUNT번을 넘으면, 물리적으로 완전히 안정된 상태가
+        // 아니어도 그 자리에서 강제로 멈춰서 무한 반복을 끊는다.
+        if (block->GetConsecutiveToppleCount() >= Constants::MAX_CONSECUTIVE_TOPPLE_COUNT)
+        {
+            block->ForceStabilize();
+        }
+        else
+        {
+            block->BeginToppling();
+            block->SetTopplePivot(pivot);
+        }
+    }
+    else if (block->GetImbalanceTimer() >= Constants::TOPPLE_STUCK_TIMEOUT)
+    {
+        // [끼임 판정] 계속 불균형인데도 이만큼(3초) 시간 동안 MAX_TOPPLE_ANGLE을 못 넘었으면, 옆
+        // 블록이나 바닥 모서리에 진짜로 끼여서 더는 못 넘어가는 것으로 보고 강제로 멈춘다. "포기" 표시는
+        // ForceStabilize() 내부에서 일괄 처리한다(어느 호출 경로에서 왔든 동일하게 적용되도록).
+        block->ForceStabilize();
+    }
+
+    return true;
 }
 
 bool PhysicsManager::CheckGlobalStability() const
@@ -819,6 +997,11 @@ void PhysicsManager::SettleToppledBlocks(const std::unordered_map<Block*, std::v
             centerOfMassX <= supportMaxX - Constants::IMBALANCE_DEADZONE;
         if (isBalanced)
         {
+            // [무한 진동 버그 수정] 지금 각도(완전히 넘어가서 90/135도처럼 누운 자세일 수 있음)를 새
+            // 안정 기준각으로 확정해둔다 — 안 그러면 Awake로 돌아가자마자 Step()의 절대각 안전장치가
+            // "여전히 40도 넘음"으로 보고 즉시 다시 BeginToppling()을 불러서 Toppling<->Awake를 매
+            // 프레임 무한 반복하며 제자리에서 떤다(physics_debug.log로 실전 확인됨).
+            block->ConfirmRestingAngle();
             block->WakeUp();
             continue;
         }
@@ -826,7 +1009,13 @@ void PhysicsManager::SettleToppledBlocks(const std::unordered_map<Block*, std::v
         // [끼임 방지] 균형을 못 찾았어도, 옆 블럭이나 바닥 모서리에 끼어서 실제로는 더 못 넘어가는
         // 채로 TOPPLE_STUCK_TIMEOUT을 넘겨 계속 Toppling에 머물러 있으면 강제로 멈춘다 — 안 그러면
         // 위 hasSupport/isBalanced 두 탈출 조건을 영원히 못 만족해서 그 자세 그대로 무한정 얼어붙는다.
-        if (block->GetActiveTimer() >= Constants::TOPPLE_STUCK_TIMEOUT)
+        // [애매한 각도에서 멈추는 문제 방지 — 실전 확인됨] 다만 "3초가 지났다"만으로 판단하면, 울퉁불퉁한
+        // 지형을 타고 느리지만 실제로 계속 굴러 내려가는 중인 블록까지 도중의 애매한 대각선 각도에서
+        // 멈춰버린다. 그래서 지금도 속도가 낮아(진짜로 멈춘 상태) 있을 때만 끼임으로 본다 — 아직
+        // 움직이고 있으면 3초가 지났어도 계속 진행하게 둔다.
+        bool hasStoppedMoving = block->GetSpeedSquared() < Constants::SLEEP_LINEAR_THRESHOLD * Constants::SLEEP_LINEAR_THRESHOLD &&
+            std::fabs(block->GetAngularVelocity()) < Constants::SLEEP_ANGULAR_THRESHOLD;
+        if (block->GetActiveTimer() >= Constants::TOPPLE_STUCK_TIMEOUT && hasStoppedMoving)
         {
             block->ForceStabilize();
         }
@@ -838,6 +1027,18 @@ void PhysicsManager::TrySleepAll(float deltaTime)
     for (Block* block : BlockManager::GetInstance().GetAllBlocks())
     {
         if (block->GetPhysicsState() != PhysicsState::Awake)
+        {
+            continue;
+        }
+
+        // [진짜 넘어지는 중 보호] ResolveBalance가 이번 스텝에 무게중심 불균형을 감지해서 실제 중력
+        // 토크를 걸고 있는 중이면(IsWedged가 아직 아니라면, 즉 아직 "포기"하지 않은 진행 중인 상태면)
+        // 여기서 각속도 임계값 기준으로 재우거나 강제 정지시키지 않는다. 넘어지는 도중의 정상적인 회전
+        // 가속을 "떨림"으로 착각해서 매번 끊어버리면, 명백히 넘어져야 할 블록이 조금씩만 진행하다
+        // 번번이 멈춰서 결국 못 넘어가는 문제가 생긴다(실전 확인됨) — "진짜로 끼여서 못 넘어가는" 판정과
+        // 강제 정지는 ResolveBalance의 m_imbalanceTimer(TOPPLE_STUCK_TIMEOUT)가 전담한다. 끼임으로
+        // 판정돼 이미 포기한(IsWedged) 블록은 여기서 정상적으로 처리되도록 그대로 둔다.
+        if (block->GetImbalanceTimer() > 0.0f && !block->IsWedged())
         {
             continue;
         }

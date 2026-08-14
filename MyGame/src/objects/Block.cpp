@@ -12,13 +12,28 @@
 
 namespace
 {
-	// [관찰 가능성] 물리 상태 전이를 Visual Studio 출력 창에 남긴다. Sleep<->Wake가 얼마나 자주
-	// 반복되는지, 어느 지점(WakeUp/Sleep/Land/BeginToppling)에서 전이가 일어났는지 코드 안 보고 바로 확인용.
-	void LogStateChange(const void* block, const char* reason)
+	// [관찰 가능성] 물리 상태 전이를 Visual Studio 출력 창 + physics_debug.log 양쪽에 남긴다. Sleep<->Wake가
+	// 얼마나 자주 반복되는지, 어느 지점(WakeUp/Sleep/Land/BeginToppling)에서 전이가 일어났는지 코드 안 보고
+	// 바로 확인용. [기존엔 OutputDebugStringA만 썼는데, 그러면 ResolveBalance의 imbalance 로그(파일)와
+	// 상태 전이 시점을 나란히 놓고 비교할 방법이 없어서 "왜 이 블럭이 이 순간 깨어났는지"를 못 봤다 —
+	// 그래서 파일에도 같이 남기고, 그 순간의 위치/각도/속도까지 같이 찍어서 원인 추적이 되게 한다]
+	void LogStateChange(const Block* block, const char* reason)
 	{
 		char text[96];
 		std::snprintf(text, sizeof(text), "[Physics] Block %p: %s\n", block, reason);
 		OutputDebugStringA(text);
+
+		FILE* file = nullptr;
+		fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
+		if (file == nullptr)
+		{
+			return;
+		}
+
+		Vector2 pos = block->GetRenderPosition();
+		std::fprintf(file, "[StateChange] block=%p reason=%s pos=(%.1f,%.1f) angle=%.2f speed=%.1f angVel=%.2f\n",
+			block, reason, pos.x, pos.y, block->GetAngle(), std::sqrt(block->GetSpeedSquared()), block->GetAngularVelocity());
+		std::fclose(file);
 	}
 
 	// [임시 디버그 - 위로 튐 원인 조사용] 충돌 반응 한 번으로 위쪽(-y) 속도가 비정상적으로 커지면
@@ -391,26 +406,35 @@ OBBCollider Block::GetCellCollider(int cellIndex) const
 Vector2 Block::GetCenterOfMassLocal() const
 {
 	// 칸 하나의 "중심"은 모서리(m_cellShape[i])에서 반 칸(0.5, 0.5)만큼 안쪽이다.
-	// 4칸 전부 같은 질량이라고 가정하고, 4칸 중심의 평균 = 전체 도형의 무게중심.
-	Vector2 sum = { 0.0f, 0.0f };
+	// 칸마다 무게(m_cellWeight)가 다를 수 있으므로 무게 가중 평균을 낸다 — 전부 1.0이면(기본값)
+	// 기존과 동일하게 4칸 중심의 단순 평균이 되고, 특정 칸이 더 무거우면 무게중심이 그쪽으로 쏠린다.
+	Vector2 weightedSum = { 0.0f, 0.0f };
+	float totalWeight = 0.0f;
 	for (int i = 0; i < CELL_COUNT; ++i)
 	{
-		sum += m_cellShape[i] + Vector2{ 0.5f, 0.5f };
+		weightedSum += (m_cellShape[i] + Vector2{ 0.5f, 0.5f }) * m_cellWeight[i];
+		totalWeight += m_cellWeight[i];
 	}
-	return sum * (1.0f / CELL_COUNT);
+	return weightedSum * (1.0f / totalWeight);
 }
 
 float Block::GetMomentOfInertia() const
 {
-	// (기존 계산 로직은 그대로 둠)
-	float cellMass = m_mass / static_cast<float>(CELL_COUNT);
-	float selfInertiaPerCell = (1.0f / 6.0f) * cellMass * Constants::TILE_SIZE * Constants::TILE_SIZE;
+	// 칸별 질량 = 총 질량(m_mass)을 m_cellWeight 비율대로 나눈 값. 전부 1.0이면 기존처럼 균등 분배.
+	float totalWeight = 0.0f;
+	for (int i = 0; i < CELL_COUNT; ++i)
+	{
+		totalWeight += m_cellWeight[i];
+	}
 
 	Vector2 centerOfMassLocal = GetCenterOfMassLocal();
 	float totalInertia = 0.0f;
 
 	for (int i = 0; i < CELL_COUNT; ++i)
 	{
+		float cellMass = m_mass * (m_cellWeight[i] / totalWeight);
+		float selfInertiaPerCell = (1.0f / 6.0f) * cellMass * Constants::TILE_SIZE * Constants::TILE_SIZE;
+
 		Vector2 cellCenterLocal = m_cellShape[i] + Vector2{ 0.5f, 0.5f };
 		Vector2 offsetPx = (cellCenterLocal - centerOfMassLocal) * Constants::TILE_SIZE;
 		float distanceSquared = offsetPx.x * offsetPx.x + offsetPx.y * offsetPx.y;
@@ -418,7 +442,7 @@ float Block::GetMomentOfInertia() const
 		totalInertia += selfInertiaPerCell + cellMass * distanceSquared;
 	}
 
-	// [트리키 타워 핵심 수정] 
+	// [트리키 타워 핵심 수정]
 	// 관성 모멘트가 크면 회전하기(넘어지기) 힘듭니다.
 	// 기존 값의 20% 수준(0.2f)으로 확 낮춰서, 살짝만 밀려도 시원하게 휙휙 넘어가게 만듭니다.
 	return totalInertia * 0.2f;
@@ -487,9 +511,19 @@ void Block::ResolveVerticalPenetration(float penetration)
 }
 
 // [강체물리 2단계] 회전을 반영한 진짜 강체 충돌.
-// 핵심 아이디어: 무게중심 정중앙을 맞은 게 아니라 한쪽 구석(contactPoint)을 맞았기 때문에,
+// 핵심 아이디어: 무게중심 정중앙을 맞은 게 아니라 한쪽 구석(접촉점)을 맞았기 때문에,
 // 그 충격의 일부가 "밀림(선속도)"이 아니라 "회전(각속도)"으로 새어나간다.
 // 이게 바로 팽이가 옆을 치면 넘어지고 가운데를 누르면 안 넘어지는 이유와 같은 원리다.
+//
+// [되돌림 — "접촉점 동시 처리"는 더 심각한 버그였다] 한때 이 함수를 접촉점 2개를 한 번에 받아서
+// "이번 호출 시작 시점의 속도 하나를 기준으로 각 점의 임펄스를 독립적으로 계산한 뒤 더하는" 방식으로
+// 바꿨었다 — 얹혀서 쉬는(속도 거의 0인) 상태의 미세한 회전 편향은 잡았지만, 진짜 충돌(속도가 큰 경우)
+// 에서는 두 점이 사실상 "같은 움직임"을 각자 독립적으로 다 멈추려고 계산한 걸 그대로 더해버려서 실제
+// 필요한 것보다 훨씬 큰 임펄스가 나왔다 — 각속도가 한 번의 충돌 처리에서 500도/초대에서 -700도/초대로
+// 튀는 등 블록이 통째로 날아가는 폭주로 이어졌다(physics_debug.log로 실전 확인됨). 제대로 된 동시-접촉
+// 처리는 두 점을 연립해서 풀어야 하는데, 그 대신 원래 방식(접촉점마다 순차 처리 + Step()의
+// COLLISION_SOLVER_ITERATIONS(4회) 반복으로 수렴)으로 되돌린다 — 이건 실전에서 오래 쓰인 검증된 방식이고,
+// 순차 처리의 미세한 회전 편향은 폭주보다 훨씬 덜 치명적이다.
 void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float penetration)
 {
 	// 1) 위치 보정: 파고든 만큼 노멀 방향으로 밀어낸다 (평행이동이라 회전 상태는 그대로 유지됨).
@@ -583,6 +617,9 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 // [강체물리 3단계] ResolveRigidCollision과 구조는 같지만, "상대가 안 움직인다"는 가정이 없어서
 // other의 위치/속도/각속도도 함께 갱신한다 (뉴턴 3법칙: this가 받는 힘과 other가 받는 힘은 크기 같고 방향 반대).
 // normal은 반드시 "other -> this" 방향이어야 한다 (TestOBBCollision/CollisionManager가 그렇게 맞춰서 준다).
+// [되돌림] "접촉점 동시 처리"를 되돌린 이유는 ResolveRigidCollision 주석 참고 — 두 점을 독립적으로 계산해
+// 더하면 진짜 충돌에서 임펄스가 과도하게 커져 블록이 날아가는 폭주가 생겼다. 원래의 접촉점별 순차 처리
+// (+ Step()의 4회 반복 수렴)로 되돌린다.
 void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, Vector2 normal, float penetration)
 {
 	// 1) 위치 보정: 겹친 만큼을 질량 비율대로 나눠서 서로 반대 방향으로 밀어낸다 (무거운 쪽이 덜 밀림).
@@ -696,22 +733,23 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 		static_cast<int>(other->m_physicsState), other->m_pivotLockTimeRemaining);
 }
 
-void Block::ApplyBalanceTorque(float imbalance, float deltaTime)
+void Block::ApplyGravityTorque(Vector2 pivotWorld, float deltaTime)
 {
-	// [중요] 이 보조력은 m_angularVelocity가 아니라 m_angle을 직접 민다. 각속도로 주면, 그로 인해
-	// 접촉점에 생기는 회전 방향 속도를 마찰(ResolveRigidCollision의 접선 임펄스)이 "미끄러짐"으로
-	// 착각해서 반대 토크로 붙잡아버린다 — 접촉 다각화+마찰은 원래 떨림을 잡으려고 넣은 건데, 그게
-	// 이 보조 회전력까지 같이 눌러버려서 결국 안 넘어지는 문제가 있었다. 각도를 직접 밀면 충돌/마찰
-	// 계산이 이 움직임 자체를 모르기 때문에 못 막는다.
-	// 관성모멘트가 기준값(REFERENCE_MOMENT_OF_INERTIA)보다 큰 모양(길쭉하거나 넓게 퍼진 모양)일수록
-	// 회전에 더 잘 버텨서 덜 밀리고, 작은 모양(뭉친 모양)일수록 더 잘 밀린다.
-	// 균형 범위 안이면 아무것도 안 한다 — 감쇠는 마찰/충돌 같은 실제 물리에 맡긴다
-	if (imbalance > Constants::IMBALANCE_DEADZONE || imbalance < -Constants::IMBALANCE_DEADZONE)
-	{
-		float baseAngularSpeed = imbalance * Constants::TOPPLE_ANGULAR_ACCELERATION;
-		float inertiaRatio = Constants::REFERENCE_MOMENT_OF_INERTIA / GetMomentOfInertia();
-		m_angle += baseAngularSpeed * inertiaRatio * deltaTime;
-	}
+	// 무게중심에서 pivot까지의 벡터 r. 중력(0, mass*GRAVITY)이 이 지렛대에 만들어내는 토크는
+	// r.x * gravityForce.y - r.y * gravityForce.x인데, gravityForce.x가 항상 0이라 뒷항은 사라지고
+	// 결국 "수평 거리(r.x) * 중력 크기"만 남는다 — 기울수록(r.x가 커질수록) 더 세게 돌아가는 이유.
+	Vector2 centerOfMassWorld = GetRenderPosition() + GetCenterOfMassLocal() * Constants::TILE_SIZE;
+	Vector2 r = centerOfMassWorld - pivotWorld;
+	float torqueAboutPivot = r.x * (m_mass * Constants::GRAVITY);
+
+	// [평행축 정리] 지금 실제로 도는 축은 무게중심이 아니라 pivot이므로, 무게중심 기준 관성모멘트
+	// (GetMomentOfInertia)에 m*거리^2를 더해 pivot 기준 관성모멘트로 바꿔줘야 한다. 이걸 빼먹으면
+	// 많이 기울어질수록(거리가 멀어질수록) 실제보다 비현실적으로 빨리 가속돼버린다.
+	float distanceSquared = r.x * r.x + r.y * r.y;
+	float inertiaAboutPivot = GetMomentOfInertia() + m_mass * distanceSquared;
+
+	float angularAccelerationRad = torqueAboutPivot / inertiaAboutPivot;
+	m_angularVelocity += MathUtil::RadiansToDegrees(angularAccelerationRad) * deltaTime;
 }
 
 void Block::BeginToppling()
@@ -726,6 +764,8 @@ void Block::BeginToppling()
 	// [강제 취침 타임아웃] 여기서부터가 진짜 새로운 불안정 사건의 시작이므로, 이전에 쌓여있던
 	// 활동 시간과 섞이지 않도록 여기서 새로 잰다
 	m_activeTimer = 0.0f;
+	m_imbalanceTimer = 0.0f;
+	m_isWedged = false;
 
 	// [무한 재넘어짐 방지] Sleep() 없이 다시 여기로 왔다는 뜻이므로 1 늘린다. Sleep()에서 0으로 리셋된다.
 	++m_consecutiveToppleCount;
@@ -741,17 +781,97 @@ void Block::ResetConsecutiveToppleCount()
 	m_consecutiveToppleCount = 0;
 }
 
+void Block::ConfirmRestingAngle()
+{
+	m_restAngleReference = m_angle;
+}
+
+float Block::GetRestAngleReference() const
+{
+	return m_restAngleReference;
+}
+
+void Block::AdvanceImbalanceTimer(float deltaTime)
+{
+	m_imbalanceTimer += deltaTime;
+}
+
+void Block::ResetImbalanceTimer()
+{
+	m_imbalanceTimer = 0.0f;
+	m_isWedged = false;
+}
+
+float Block::GetImbalanceTimer() const
+{
+	return m_imbalanceTimer;
+}
+
+void Block::SetImbalancePivot(Vector2 pivot)
+{
+	m_imbalancePivot = pivot;
+	m_imbalanceCenterOfMassAtStart = GetRenderPosition() + GetCenterOfMassLocal() * Constants::TILE_SIZE;
+	m_imbalanceAngleAtStart = m_angle;
+}
+
+Vector2 Block::GetImbalancePivot() const
+{
+	return m_imbalancePivot;
+}
+
+Vector2 Block::GetEffectiveWeightPositionWorld() const
+{
+	if (m_imbalanceTimer <= 0.0f)
+	{
+		// 불균형 에피소드 중이 아니면(평범하게 안정된 상태) 그냥 진짜 무게중심을 쓴다.
+		return GetRenderPosition() + GetCenterOfMassLocal() * Constants::TILE_SIZE;
+	}
+
+	// 에피소드 시작 시점의 (무게중심-피벗) 오프셋을, 그 이후 실제로 더 돈 각도만큼 회전시켜서
+	// "pivot을 축으로 진짜 swing했다면 지금 무게중심이 어디 있을지"를 계산한다. m_position은 안 건드린다.
+	Vector2 offsetAtStart = m_imbalanceCenterOfMassAtStart - m_imbalancePivot;
+	float deltaAngle = m_angle - m_imbalanceAngleAtStart;
+	float radians = MathUtil::DegreesToRadians(deltaAngle);
+	float cosAngle = static_cast<float>(std::cos(radians));
+	float sinAngle = static_cast<float>(std::sin(radians));
+	Vector2 rotatedOffset
+	{
+		offsetAtStart.x * cosAngle - offsetAtStart.y * sinAngle,
+		offsetAtStart.x * sinAngle + offsetAtStart.y * cosAngle
+	};
+
+	return m_imbalancePivot + rotatedOffset;
+}
+
+bool Block::IsWedged() const
+{
+	return m_isWedged;
+}
+
 void Block::ForceStabilize()
 {
 	LogStateChange(this, "-> ForceStabilize (stuck toppling loop)");
 	m_velocity = { 0.0f, 0.0f };
 	m_angularVelocity = 0.0f;
-	Sleep();
-}
 
-void Block::AddAngularVelocity(float amount)
-{
-	m_angularVelocity += amount;
+	// [무한 재시도 방지 — 실전에서 발견된 2차 폭주 버그] m_activeTimer는 Sleep<->WakeUp을 오가도 일부러
+	// 리셋 안 되게 설계됐다(FORCE_SLEEP_TIMEOUT 안전장치가 반복되는 미세 진동도 결국 잡아내야 하니까) —
+	// 그런데 ForceStabilize가 "이미 한 번 안전장치에 걸려 강제로 재운" 뒤에도 이 타이머를 그대로 두면,
+	// 나중에 (옆 블록 충돌 등) 다른 이유로 다시 깨어나는 순간 activeTimer가 이미 FORCE_SLEEP_TIMEOUT을
+	// 훌쩍 넘은 상태라 TrySleepAll/ResolveBalance가 그 즉시 또 ForceStabilize를 불러버린다 — 강제 정지
+	// →깨어남→강제 정지가 사실상 매 프레임 무한 반복되는 걸 physics_debug.log로 실전 확인했다(각도/위치가
+	// 고정된 채 수백 번 반복). "이미 포기했다"는 사실 자체가 새로운 사건이므로, 여기서부터 다시 새로
+	// 3초를 재도록 완전히 리셋한다.
+	m_activeTimer = 0.0f;
+
+	// 같은 이유로, ResolveBalance도 같은(안 풀린) 불균형을 곧바로 다시 재시도하지 않도록 "포기" 표시를
+	// 해둔다 — 어느 ForceStabilize 호출 경로(끼임 판정/재넘어짐 한도/전역 안전장치)에서 왔든 동일하게
+	// 적용되도록 호출부가 아니라 여기서 직접 처리한다. 균형이 실제로 돌아오면 ResetImbalanceTimer()에서
+	// 자연히 풀린다.
+	m_imbalanceTimer = 0.0f;
+	m_isWedged = true;
+
+	Sleep();
 }
 
 void Block::DampVelocity(float dampingFactor)
@@ -787,6 +907,11 @@ void Block::Sleep()
 		m_angle = nearestRightAngle;
 	}
 	m_angularVelocity = 0.0f;
+
+	// [넘어짐 재발 판정 기준각] 지금 이 각도(0도든, 완전히 넘어져서 90/135도든)를 "확실히 안정된" 기준으로
+	// 새로 잡는다 — MAX_TOPPLE_ANGLE 비교가 절대각이 아니라 이 기준에서 얼마나 더 돌았는지를 봐야
+	// 완전히 넘어져서 옆으로 누운 채 잠든 블록이 또 안전장치에 걸려 무한 반복하지 않는다.
+	ConfirmRestingAngle();
 
 	if (!m_hasToppled)
 	{
@@ -856,4 +981,7 @@ void Block::Land()
 	m_position = { m_gridX * Constants::SUBCELL_SIZE, m_gridY * Constants::SUBCELL_SIZE + dropOffset };
 	m_physicsState = PhysicsState::Awake;
 	m_activeTimer = 0.0f;
+	m_imbalanceTimer = 0.0f;
+	m_isWedged = false;
+	m_restAngleReference = 0.0f;
 }
