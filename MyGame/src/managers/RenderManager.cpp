@@ -205,7 +205,7 @@ void RenderManager::DrawSupportDebug(ID2D1RenderTarget* renderTarget)
 	// [성능] "누가 누구 위에 얹혀 있는지"를 이 프레임에 한 번만 계산해서 모든 블럭이 재사용한다.
 	// 블럭마다 새로 계산하면(4-인자 ComputeSupportDebugInfo) 물리 스텝에서 고쳤던 것과 같은 n³ 비용이
 	// F1 디버그 오버레이에 그대로 남는다 — 블럭이 서로 가까이 붙어있는(예: 붕괴 중인) 상황일수록 심하다.
-	std::unordered_map<Block*, std::vector<Block*>> restingChildren = PhysicsManager::GetInstance().BuildRestingChildrenMap();
+	PhysicsManager::RestingChildrenMap restingChildren = PhysicsManager::GetInstance().BuildRestingChildrenMap();
 
 	for (Block* block : BlockManager::GetInstance().GetAllBlocks())
 	{

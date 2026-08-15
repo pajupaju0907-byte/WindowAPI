@@ -216,7 +216,8 @@ void BlockManager::CheckDeathZone()
 
     for (Block* block : GetAllBlocks())
     {
-        if (block->GetPhysicsState() == PhysicsState::Sleeping)
+        PhysicsState state = block->GetPhysicsState();
+        if (state != PhysicsState::Airborne && state != PhysicsState::Toppling)
         {
             continue;
         }

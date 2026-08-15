@@ -6,47 +6,9 @@
 #include "../managers/CollisionManager.h"
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 
 namespace
 {
-	// [임시 디버그 - 왜 지지를 못 받는지 조사용] SettleToppledBlocks가 저속인 Toppling 블록을
-	// 평가할 때마다 칸별 지지 판정 근거를 파일로 남긴다. 원인을 찾으면 지워도 된다.
-	void LogSettleAttempt(Block* block, bool hasSupport)
-	{
-		FILE* file = nullptr;
-		fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
-		if (file == nullptr)
-		{
-			return;
-		}
-
-		Vector2 pos = block->GetRenderPosition();
-		std::fprintf(file, "[SettleToppledBlocks] block=%p pos=(%.1f,%.1f) angle=%.2f speed=%.1f angVel=%.2f hasSupport=%d\n",
-			block, pos.x, pos.y, block->GetAngle(), std::sqrt(block->GetSpeedSquared()), block->GetAngularVelocity(), hasSupport ? 1 : 0);
-
-		for (int i = 0; i < block->GetCellCount(); ++i)
-		{
-			Vector2 corners[4];
-			block->GetCellRotatedCorners(i, corners);
-			float minX = corners[0].x, maxX = corners[0].x, bottomY = corners[0].y;
-			for (int c = 1; c < 4; ++c)
-			{
-				if (corners[c].x < minX) minX = corners[c].x;
-				if (corners[c].x > maxX) maxX = corners[c].x;
-				if (corners[c].y > bottomY) bottomY = corners[c].y;
-			}
-			float centerX = (minX + maxX) * 0.5f;
-			bool isOverFloorPlatform = centerX >= Constants::FLOOR_LEFT_X && centerX <= Constants::FLOOR_RIGHT_X;
-			bool isNearFloorHeight = bottomY >= Constants::FLOOR_TOP_Y - Constants::SUPPORT_CHECK_TOLERANCE &&
-				bottomY <= Constants::FLOOR_TOP_Y + Constants::SUPPORT_CHECK_TOLERANCE;
-			std::fprintf(file, "  cell%d minX=%.1f maxX=%.1f centerX=%.1f bottomY=%.1f floorTopY=%.1f floorX=[%.1f,%.1f] overFloorX=%d nearFloorY=%d\n",
-				i, minX, maxX, centerX, bottomY, Constants::FLOOR_TOP_Y, Constants::FLOOR_LEFT_X, Constants::FLOOR_RIGHT_X,
-				isOverFloorPlatform ? 1 : 0, isNearFloorHeight ? 1 : 0);
-		}
-		std::fclose(file);
-	}
-
 	// [경사면 미끄러짐 허용] 이 블럭의 각도가 90도 배수(0/90/180/270...)에서 SUPPORT_SURFACE_MAX_TILT_DEGREES
 	// 이내인지 — 즉 윗면이 실제로 평평한 가로 선반 역할을 할 수 있는 각도인지 본다. Constants.h의
 	// SUPPORT_SURFACE_MAX_TILT_DEGREES 주석 참고.
@@ -103,16 +65,21 @@ void PhysicsManager::Step(float deltaTime)
     }
 
     // 2. 충돌 해결 (Solver Iterations)
+    // [좌우 편향 방지] 접촉점 처리 순서(왼쪽 먼저/오른쪽 먼저)를 이번 프레임의 4회 반복 전체에 걸쳐
+    // 통일하고, 그 방향을 프레임(Step 호출)마다 뒤집는다 — 이유는 m_swapContactOrderThisStep 선언부
+    // (PhysicsManager.h) 주석 참고. 반복 안에서 매번 뒤집으면 뒤쪽 반복의 작은 편향이 앞쪽 반복의 큰
+    // 편향을 다 못 지운다.
+    m_swapContactOrderThisStep = !m_swapContactOrderThisStep;
     for (int iteration = 0; iteration < Constants::COLLISION_SOLVER_ITERATIONS; ++iteration)
     {
         for (Block* block : BlockManager::GetInstance().GetAllBlocks())
         {
             if (block->GetPhysicsState() == PhysicsState::Awake || block->GetPhysicsState() == PhysicsState::Toppling)
             {
-                ResolveFloorCollision(block);
+                ResolveFloorCollision(block, m_swapContactOrderThisStep);
             }
         }
-        ResolveBlockCollisions();
+        ResolveBlockCollisions(m_swapContactOrderThisStep);
     }
 
     // 2.5. [바닥 마찰 근사] 지지대가 있는 Awake 블럭은 매 프레임 속도를 감쇠시켜서 미끄러짐을 잡는다.
@@ -143,9 +110,27 @@ void PhysicsManager::Step(float deltaTime)
             }
         }
 
-        if (isTouchingAnySupport)
+        if (!isTouchingAnySupport)
         {
-            block->DampVelocity(Constants::GROUNDED_VELOCITY_DAMPING);
+            continue;
+        }
+
+        // [불균형 중에도 선속도 감쇠는 유지 — "무게중심이 불안정하면 미끄러진다" 버그 수정] 충돌 임펄스
+        // 기반 마찰(ResolveRigidCollision)은 그 순간의 수직 임펄스 크기에 비례해서 clamp되는데, 가만히
+        // 얹힌 채 기우는 중엔 수직 임펄스가 거의 0이라 마찰도 거의 안 걸린다. 예전엔 이 선속도 감쇠까지
+        // 각속도 감쇠와 함께 불균형 중엔 통째로 건너뛰어서, 무게중심이 지지 범위를 벗어난 순간 옆으로
+        // 잡아줄 게 없어 미끄러지는 원인이 됐다. 선속도 감쇠는 회전(넘어짐)과 무관하므로 늘 걸어둔다.
+        block->DampVelocity(Constants::GROUNDED_VELOCITY_DAMPING);
+
+        // [넘어지기 직전 단계는 각속도 감쇠만 제외 — 실전 로그로 확인된 "40도를 절대 못 넘고 그 자리에서
+        // 멈춤" 버그 수정] ResolveBalance가 불균형을 감지해서 ApplyGravityTorque로 막 각속도를 키우는
+        // 중인데, 토크가 붙여주는 각속도를 매 스텝 GROUNDED_ANGULAR_DAMPING(0.75)만큼 도로 깎아버리면
+        // 지렛대가 아직 짧아 토크 자체가 작은 초반에는 절대 MAX_TOPPLE_ANGLE까지 못 크고
+        // TOPPLE_STUCK_TIMEOUT에 걸려 그 자리에서 ForceStabilize된다(physics_debug.log에서 각도 1~2도대로
+        // 멈추는 것으로 실전 확인됨). TrySleepAll이 같은 이유로 이미 "불균형 진행 중이면 재우지 않는다"는
+        // 예외를 두고 있는 것과 같은 기준으로, 각속도 감쇠만 불균형 에피소드 중엔 건너뛴다.
+        if (block->GetImbalanceTimer() <= 0.0f)
+        {
             block->DampAngularVelocity(Constants::GROUNDED_ANGULAR_DAMPING);
         }
     }
@@ -157,32 +142,15 @@ void PhysicsManager::Step(float deltaTime)
     // [성능] "누가 누구 위에 얹혀 있는지"를 이 스텝에서 한 번만 계산해서 모든 블록의 ResolveBalance가
     // 재사용한다 — 예전엔 블록마다(그리고 그 안에서 재귀할 때마다) 전체 블록을 매번 다시 스캔해서,
     // 탑이 커질수록 비용이 세제곱에 가깝게 늘어났다.
-    std::unordered_map<Block*, std::vector<Block*>> restingChildren = BuildRestingChildrenMap();
-    // [지지대 우선 붕괴] GetAllBlocks()는 스폰(착지) 순서로 도는데, 이게 곧 "아래(먼저 놓인) 블록 먼저,
-    // 위(나중에 놓인) 블록 나중"이다 — 그래서 이 루프에서 아래 블록의 ResolveBalance가 항상 위 블록보다
-    // 먼저 돈다. 아래가 이번 프레임에 불균형으로 처리되면, 그 위에 얹힌 모든 블록(재귀)을 deferredBlocks에
-    // 표시해서 이번 프레임엔 자기 몫의 개별 불균형 검사를 건너뛰게 한다 — "지지대가 먼저 무너지는 게
-    // 맞다"는 설계 결정에 따라, 위에 얹힌 것들이 자기 좁은 접촉면만 보고 따로 넘어지는 대신 아래의
-    // 붕괴에 묻어가게 하기 위함이다. 아래가 실제로 넘어지면(Toppling) IsCellSupported가 더 이상 그
-    // 블록을 지지 제공자로 인정하지 않으므로, 다음 프레임에 위 블록들이 "지지를 잃었다"를 스스로
-    // 감지해서 자연스럽게 반응한다.
-    std::unordered_set<Block*> deferredBlocks;
+    RestingChildrenMap restingChildren = BuildRestingChildrenMap();
     for (Block* block : BlockManager::GetInstance().GetAllBlocks())
     {
         PhysicsState state = block->GetPhysicsState();
         if (state != PhysicsState::Awake && state != PhysicsState::Sleeping) continue;
 
-        if (deferredBlocks.find(block) == deferredBlocks.end())
-        {
-            bool wasImbalanced = ResolveBalance(block, deltaTime, restingChildren);
-            if (wasImbalanced)
-            {
-                MarkDescendantsDeferred(block, restingChildren, deferredBlocks);
-            }
-        }
+        ResolveBalance(block, deltaTime, restingChildren);
 
-        // ResolveBalance 외부적인 요인(충돌 등)으로 각도가 꺾인 경우의 안전장치. defer 여부와 무관하게
-        // 항상 확인한다 — 실제로 충돌 등으로 이미 각도가 넘어간 건 아래 블록 처리 순서와 상관없이 반영돼야 한다.
+        // ResolveBalance 외부적인 요인(충돌 등)으로 각도가 꺾인 경우의 안전장치.
         // [절대각이 아니라 기준각 대비 — 실전에서 발견된 무한 진동 버그 수정] GetAngle()의 절대값이 아니라
         // GetRestAngleReference()(마지막으로 안정 확인된 각도)에서 얼마나 더 돌았는지를 봐야 한다 — 안
         // 그러면 90/135도로 완전히 넘어져서 옆으로 누운 채 정상적으로 안정된 블록도 절대각이 여전히
@@ -206,7 +174,7 @@ void PhysicsManager::ApplyGravity(Block* block)
     block->ApplyForce({ 0.0f, block->GetMass() * Constants::GRAVITY });
 }
 
-void PhysicsManager::ResolveFloorCollision(Block* block)
+void PhysicsManager::ResolveFloorCollision(Block* block, bool swapContactOrder)
 {
     // [바닥 SAT 통합] 바닥을 하나의 정적 OBB로 취급해서, 블럭-블럭과 똑같이 CollisionManager가
     // 칸 단위 SAT + 접촉 매니폴드(접촉점 2개) 판정을 전담한다. 예전엔 여기서 직접 칸의 네 모서리를
@@ -218,15 +186,27 @@ void PhysicsManager::ResolveFloorCollision(Block* block)
         return;
     }
 
-    // [접촉 다각화] 첫 번째 점만 위치 보정을 하고(penetration 그대로), 두 번째 점은 이미 밀어낸 뒤라
-    // penetration을 0으로 넘겨서 속도/토크 반응만 추가로 준다 — 면과 면이 맞닿았을 때 양 끝을 동시에
-    // 붙잡아서 미세 회전(떨림)이 사라진다. (한때 이 두 호출을 하나로 합쳐 "동시 처리"했다가, 진짜
+    // [접촉 다각화] 먼저 처리되는 점만 위치 보정을 하고(penetration 그대로), 나중 점은 이미 밀어낸
+    // 뒤라 penetration을 0으로 넘겨서 속도/토크 반응만 추가로 준다 — 면과 면이 맞닿았을 때 양 끝을
+    // 동시에 붙잡아서 미세 회전(떨림)이 사라진다. (한때 이 두 호출을 하나로 합쳐 "동시 처리"했다가, 진짜
     // 충돌에서 임펄스가 과도하게 커지는 폭주 버그로 되돌렸다 — Block::ResolveRigidCollision 주석 참고.)
-    block->ResolveRigidCollision(pair.contactPoints[0], pair.normal, pair.penetration);
-    block->ResolveRigidCollision(pair.contactPoints[1], pair.normal, 0.0f);
+    // [좌우 편향 방지] contactPoints[0]/[1]은 BuildManifold가 항상 "왼쪽/오른쪽" 순서로 결정론적으로
+    // 고정해서 주기 때문에, 항상 같은 순서로만 순차 처리하면 완벽히 대칭인 충돌에서도 매번 같은 부호의
+    // 잔여 각속도가 남는다(PhysicsManager.h의 ResolveBlockPairCollision 주석 참고). swapContactOrder로
+    // 어느 점이 먼저 처리될지를 뒤집어서 그 편향을 상쇄시킨다 — 이 값은 프레임(Step) 단위로 뒤집힌다.
+    if (swapContactOrder)
+    {
+        block->ResolveRigidCollision(pair.contactPoints[1], pair.normal, pair.penetration);
+        block->ResolveRigidCollision(pair.contactPoints[0], pair.normal, 0.0f);
+    }
+    else
+    {
+        block->ResolveRigidCollision(pair.contactPoints[0], pair.normal, pair.penetration);
+        block->ResolveRigidCollision(pair.contactPoints[1], pair.normal, 0.0f);
+    }
 }
 
-void PhysicsManager::ResolveBlockPairCollision(Block* block, Block* other)
+void PhysicsManager::ResolveBlockPairCollision(Block* block, Block* other, bool swapContactOrder)
 {
     // [책임 분리] "겹쳤는지/어디를/얼마나 겹쳤는지"(SAT, 접촉 매니폴드)는 CollisionManager가 전담한다.
     // 여기서는 그 판정 결과를 가지고 "그래서 어떻게 반응할지"(WakeUp 여부, 강체 충돌 임펄스)만 담당한다.
@@ -253,30 +233,35 @@ void PhysicsManager::ResolveBlockPairCollision(Block* block, Block* other)
         blockMovable = true; // 이제 block도 움직일 수 있게 되었으므로 true로 바꿔줌
     }
 
-    // [접촉 다각화] CollisionManager가 넘겨준 접촉점 2개에 대해서만 반응을 준다. 첫 번째 점만 위치
-    // 보정을 하고(penetration 그대로), 두 번째 점은 이미 밀어낸 뒤라 penetration을 0으로 넘겨서
-    // 속도/토크 반응만 추가로 준다 — 면과 면이 맞닿았을 때 양 끝을 동시에 붙잡아서 미세 회전(떨림)이 사라진다
+    // [접촉 다각화] CollisionManager가 넘겨준 접촉점 2개에 대해서만 반응을 준다. 먼저 처리되는 점만
+    // 위치 보정을 하고(penetration 그대로), 나중 점은 이미 밀어낸 뒤라 penetration을 0으로 넘겨서
+    // 속도/토크 반응만 추가로 준다 — 면과 면이 맞닿았을 때 양 끝을 동시에 붙잡아서 미세 회전(떨림)이 사라진다.
+    // [좌우 편향 방지] swapContactOrder로 두 점 중 어느 쪽이 먼저 처리될지를 뒤집는다(프레임 단위) —
+    // 이유는 PhysicsManager.h의 ResolveBlockPairCollision 선언부 주석 참고.
+    Vector2 firstPoint = swapContactOrder ? pair.contactPoints[1] : pair.contactPoints[0];
+    Vector2 secondPoint = swapContactOrder ? pair.contactPoints[0] : pair.contactPoints[1];
+
     if (blockMovable && otherMovable)
     {
         // 둘 다 움직일 수 있으면 진짜 쌍방향 충돌
-        block->ResolveRigidCollisionWithBlock(other, pair.contactPoints[0], pair.normal, pair.penetration);
-        block->ResolveRigidCollisionWithBlock(other, pair.contactPoints[1], pair.normal, 0.0f);
+        block->ResolveRigidCollisionWithBlock(other, firstPoint, pair.normal, pair.penetration);
+        block->ResolveRigidCollisionWithBlock(other, secondPoint, pair.normal, 0.0f);
     }
     else if (blockMovable)
     {
         // other는 Sleeping(고정) — block만 밀려남. normal이 이미 "other->block" 방향이라 그대로 씀
-        block->ResolveRigidCollision(pair.contactPoints[0], pair.normal, pair.penetration);
-        block->ResolveRigidCollision(pair.contactPoints[1], pair.normal, 0.0f);
+        block->ResolveRigidCollision(firstPoint, pair.normal, pair.penetration);
+        block->ResolveRigidCollision(secondPoint, pair.normal, 0.0f);
     }
     else if (otherMovable)
     {
         // block이 Sleeping(고정) — other만 밀려남. other 입장에선 반대(block->other) 방향이 필요해서 뒤집는다
-        other->ResolveRigidCollision(pair.contactPoints[0], pair.normal * -1.0f, pair.penetration);
-        other->ResolveRigidCollision(pair.contactPoints[1], pair.normal * -1.0f, 0.0f);
+        other->ResolveRigidCollision(firstPoint, pair.normal * -1.0f, pair.penetration);
+        other->ResolveRigidCollision(secondPoint, pair.normal * -1.0f, 0.0f);
     }
 }
 
-void PhysicsManager::ResolveBlockCollisions()
+void PhysicsManager::ResolveBlockCollisions(bool swapContactOrder)
 {
     std::vector<Block*> allBlocks = BlockManager::GetInstance().GetAllBlocks();
 
@@ -310,7 +295,7 @@ void PhysicsManager::ResolveBlockCollisions()
                 continue;
             }
 
-            ResolveBlockPairCollision(blockA, blockB);
+            ResolveBlockPairCollision(blockA, blockB, swapContactOrder);
         }
     }
 }
@@ -335,9 +320,88 @@ void PhysicsManager::GetCellSupportBounds(Block* block, int cellIndex, float& ou
 }
 bool PhysicsManager::IsCellSupported(Block* block, int cellIndex) const
 {
-    float supportMinX = 0.0f;
-    float supportMaxX = 0.0f;
-    return GetCellSupportRange(block, cellIndex, supportMinX, supportMaxX);
+    float cellTopY = 0.0f, cellBottomY = 0.0f, cellMinX = 0.0f, cellMaxX = 0.0f;
+    GetCellSupportBounds(block, cellIndex, cellTopY, cellBottomY, cellMinX, cellMaxX);
+    float cellCenterX = (cellMinX + cellMaxX) * 0.5f;
+
+    // [왼쪽 끝/가운데/오른쪽 끝, 세 지점 레이캐스트] 서로 떨어진 두 지지대(예: 양쪽에 블럭 두 개, 가운데는
+    // 완전한 허공) 위에 이 칸이 걸쳐 있으면, 좌우 끝 레이는 각각 지지대에 맞지만 가운데 레이는 허공을
+    // 그대로 지나가 맞는 게 없다 — 세 지점 중 하나라도 맞으면 "지지는 있다"고 본다(가운데가 비어 있어도
+    // 좌우 어느 한쪽에 진짜로 얹혀 있으면 완전한 자유낙하는 아니므로).
+    float unusedHitDistance = 0.0f;
+    return RaycastDownForSupport({ cellMinX, cellBottomY }, block, unusedHitDistance) ||
+        RaycastDownForSupport({ cellCenterX, cellBottomY }, block, unusedHitDistance) ||
+        RaycastDownForSupport({ cellMaxX, cellBottomY }, block, unusedHitDistance);
+}
+
+bool PhysicsManager::RaycastDownForSupport(Vector2 origin, Block* selfBlock, float& outHitDistance) const
+{
+    bool hasHit = false;
+    outHitDistance = 0.0f;
+
+    bool isOverFloorPlatform = origin.x >= Constants::FLOOR_LEFT_X && origin.x <= Constants::FLOOR_RIGHT_X;
+    if (isOverFloorPlatform)
+    {
+        float distanceToFloor = Constants::FLOOR_TOP_Y - origin.y;
+        bool isWithinTolerance = distanceToFloor >= -Constants::SUPPORT_CHECK_TOLERANCE &&
+            distanceToFloor <= Constants::SUPPORT_CHECK_TOLERANCE;
+        if (isWithinTolerance)
+        {
+            outHitDistance = distanceToFloor;
+            hasHit = true;
+        }
+    }
+
+    for (Block* other : BlockManager::GetInstance().GetAllBlocks())
+    {
+        // [경사면 미끄러짐 허용] GetCellSupportRange와 같은 이유로, 회전을 무시하고 "평평한 선반"으로
+        // 근사하는 이 판정에서 축 정렬에서 크게 벗어난 블럭은 지지 제공자 후보에서 뺀다.
+        bool otherCanSupport = other != selfBlock &&
+            other->GetPhysicsState() != PhysicsState::Airborne &&
+            other->GetPhysicsState() != PhysicsState::Toppling &&
+            IsNearAxisAlignedAngle(other->GetAngle());
+        if (!otherCanSupport)
+        {
+            continue;
+        }
+
+        // [성능] 실제 모서리 계산 전에 블록 원점 Y거리로 먼저 걸러낸다(GetCellSupportRange와 같은 이유)
+        if (std::fabs(other->GetRenderPosition().y - origin.y) > Constants::SUPPORT_BROADPHASE_MAX_BLOCK_EXTENT)
+        {
+            continue;
+        }
+
+        for (int j = 0; j < other->GetCellCount(); ++j)
+        {
+            float otherTopY = 0.0f, otherBottomY = 0.0f, otherMinX = 0.0f, otherMaxX = 0.0f;
+            GetCellSupportBounds(other, j, otherTopY, otherBottomY, otherMinX, otherMaxX);
+
+            // 레이가 이 칸의 X범위를 지나가지 않으면(가로로 빗나가면) 애초에 맞을 수 없다
+            if (origin.x < otherMinX || origin.x > otherMaxX)
+            {
+                continue;
+            }
+
+            // 내 바닥이 맞닿아야 하는 건 상대 칸의 "윗면"이다 — 반대로 비교하면 다른 블록 위에 쌓인
+            // 블록은 지지 판정이 늘 실패한다
+            float distanceToOther = otherTopY - origin.y;
+            bool isWithinTolerance = distanceToOther >= -Constants::SUPPORT_CHECK_TOLERANCE &&
+                distanceToOther <= Constants::SUPPORT_CHECK_TOLERANCE;
+            if (!isWithinTolerance)
+            {
+                continue;
+            }
+
+            // 진짜 레이캐스트처럼, 이미 찾은 것보다 더 가까운(레이 시작점에 더 가까운) 지지면만 갱신한다
+            if (!hasHit || std::fabs(distanceToOther) < std::fabs(outHitDistance))
+            {
+                outHitDistance = distanceToOther;
+                hasHit = true;
+            }
+        }
+    }
+
+    return hasHit;
 }
 
 bool PhysicsManager::GetCellSupportRange(Block* block, int cellIndex, float& outSupportMinX, float& outSupportMaxX) const
@@ -347,22 +411,19 @@ bool PhysicsManager::GetCellSupportRange(Block* block, int cellIndex, float& out
     float cellMinX = 0.0f;
     float cellMaxX = 0.0f;
     GetCellSupportBounds(block, cellIndex, cellTopY, cellBottomY, cellMinX, cellMaxX);
-    float cellCenterX = (cellMinX + cellMaxX) * 0.5f;
 
-    // 칸이 조금이라도 걸치는지가 아니라, 칸의 중심(cellCenterX)이 실제로 그 위에 있는지를 본다
-    // (=칸의 절반 넘게 걸쳐야 지지된다고 인정) — 살짝만 걸쳐도 지지된다고 치면 지지 범위가 실제보다
-    // 넓게 잡혀서 명백히 넘어져야 할 상황에서도 안 넘어지게 된다
     bool isNearFloorHeight = cellBottomY >= Constants::FLOOR_TOP_Y - Constants::SUPPORT_CHECK_TOLERANCE &&
         cellBottomY <= Constants::FLOOR_TOP_Y + Constants::SUPPORT_CHECK_TOLERANCE;
-    // [경계값 버그 — 실전 확인됨] 반칸(서브셀) 단위로 착지하는 블록은 칸 중심이 FLOOR_LEFT_X/RIGHT_X와
-    // 정확히 같은 값(예: 144.0)이 되는 경우가 실제로 생긴다. 예전엔 여기가 엄격한 부등호(>/<)라
-    // 정확히 경계에 걸린 칸은 "지지 안 됨"으로 판정돼서, 눈에는 바닥 위에 서 있는데도 IsCellSupported가
-    // 영원히 false를 반환 — Sleep도 못 하고, ResolveBalance(불균형 판정)도 아예 못 타고(지지가 없다고
-    // 보니까), 대신 매 프레임 중력에 떨어졌다가 바닥 충돌로 밀려나오는 걸 반복하며 그 충돌 반응의 미세한
-    // 비대칭이 누적돼 서서히 엉뚱한 각도로 기울어졌다. 경계에 정확히 걸친 것도 "지지된다"고 보도록
-    // 이상(>=)/이하(<=)로 완화한다.
-    bool isOverFloorPlatform = cellCenterX >= Constants::FLOOR_LEFT_X && cellCenterX <= Constants::FLOOR_RIGHT_X;
-    if (isNearFloorHeight && isOverFloorPlatform)
+    // [근본 수정 — 서브셀 걸침이 부자연스럽던 원인] 예전엔 칸 중심이 발판 위에 있어야만(=절반 넘게
+    // 걸쳐야) 지지로 인정했다. 그런데 실제로 반환하는 지지 범위(아래 outSupportMinX/MaxX)는 이미 겹친
+    // 부분만 std::max/min으로 잘라서 주므로, 절반 미만 걸친 칸을 포함시켜도 그 칸이 만드는 좁은 접촉
+    // 폭 그대로만 반영될 뿐 범위가 부풀지 않는다 — 즉 중심 기준 이분법은 이제 안전장치로서 의미가 없다.
+    // 반면 서브셀(반칸=SUBCELL_SIZE=24px) 단위 착지는 "정확히 50%" 걸침이 흔한데, 중심 기준 이분법이면
+    // 49% 걸침은 지지 0, 51% 걸침은 그 칸 전체가 지지 후보로 등판하는 것처럼 취급돼 지지 범위가 프레임
+    // 사이에 없다가 갑자기 넓어지며 튀어 보였다. 걸친 만큼(조금이라도 겹치면 그만큼만) 그대로 지지로
+    // 반영해야 무게중심이 걸친 비율에 비례해 시소처럼 서서히 기운다.
+    bool overlapsFloorPlatform = cellMaxX > Constants::FLOOR_LEFT_X && cellMinX < Constants::FLOOR_RIGHT_X;
+    if (isNearFloorHeight && overlapsFloorPlatform)
     {
         // [경계값 버그 2 — 실전 확인됨] 칸 중심이 지지 쪽에 있다고 해서 칸 "전체 폭"을 지지 범위에 다
         // 넣으면 안 된다 — 칸이 발판 가장자리에 절반쯤 걸친 경우(중심은 발판 위, 나머지 절반은 허공),
@@ -372,24 +433,6 @@ bool PhysicsManager::GetCellSupportRange(Block* block, int cellIndex, float& out
         // 발판과 실제로 겹치는 부분(교집합)만 돌려준다.
         outSupportMinX = (std::max)(cellMinX, Constants::FLOOR_LEFT_X);
         outSupportMaxX = (std::min)(cellMaxX, Constants::FLOOR_RIGHT_X);
-
-        // [임시 디버그 - 왜 허공에서 Sleeping인지 조사용]
-        if (block->GetPhysicsState() == PhysicsState::Sleeping)
-        {
-            static int floorLogCount = 0;
-            if (floorLogCount < 50)
-            {
-                FILE* file = nullptr;
-                fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
-                if (file != nullptr)
-                {
-                    std::fprintf(file, "[IsCellSupported/FLOOR] block=%p cell=%d cellBottomY=%.1f cellCenterX=%.1f floorTopY=%.1f\n",
-                        block, cellIndex, cellBottomY, cellCenterX, Constants::FLOOR_TOP_Y);
-                    std::fclose(file);
-                }
-                ++floorLogCount;
-            }
-        }
         return true;
     }
 
@@ -425,41 +468,20 @@ bool PhysicsManager::GetCellSupportRange(Block* block, int cellIndex, float& out
 
             // 내 칸의 바닥이 맞닿아야 하는 건 상대 칸의 "바닥"이 아니라 "윗면"이다 — 반대로 비교하면
             // 다른 블록 위에 쌓인 블록은 지지 판정이 늘 실패해서 절대 Sleep에 못 들어간다
-            // [경계값 버그 3 — 바닥 케이스와 똑같은 버그가 블록 간 지지에도 있었다] 여기가 엄격한
-            // 부등호(>/<)였다 — 반칸(서브셀) 단위로 착지하면 내 칸 중심이 아래 블록의 모서리(otherMinX/
-            // otherMaxX)와 정확히 같은 값이 되는 경우가 실제로 자주 생기는데, 그때 "지지 안 됨"으로
-            // 판정돼버렸다. FLOOR 케이스는 이미 고쳤는데 이 BLOCK 케이스는 놓쳤던 것 — 반칸 단위 착지가
-            // "이상하게 작동"하는 남은 원인의 핵심이다. 경계에 정확히 걸친 것도 지지되는 것으로 본다.
-            bool centerOverlapsOther = cellCenterX >= otherMinX && cellCenterX <= otherMaxX;
+            // [근본 수정 — 위 FLOOR 케이스와 같은 이유] 칸 중심이 상대 칸 위에 있어야만(절반 초과) 지지로
+            // 인정하던 이분법을 걷어냈다. 아래에서 지지 범위를 실제 겹친 폭만큼만 클리핑해서 돌려주므로,
+            // 살짝만 걸친 칸도 그 좁은 폭만큼만 지지로 반영될 뿐 범위가 부풀지 않는다. 서브셀(반칸) 단위
+            // 착지에서 흔한 "정확히 50%" 걸침 때 49%/51% 사이에서 지지 유무가 통째로 뒤집히던 것도 같이
+            // 없어진다 — 걸친 만큼 비례해서 지지가 잡혀야 시소처럼 자연스럽게 기운다.
+            bool overlapsOther = cellMaxX > otherMinX && cellMinX < otherMaxX;
             bool isRestingOnOther = cellBottomY >= otherTopY - Constants::SUPPORT_CHECK_TOLERANCE &&
                 cellBottomY <= otherTopY + Constants::SUPPORT_CHECK_TOLERANCE;
 
-            if (centerOverlapsOther && isRestingOnOther)
+            if (overlapsOther && isRestingOnOther)
             {
                 // [경계값 버그 2] 위 바닥 케이스와 같은 이유로, 아래 블록과 실제로 겹치는 부분만 돌려준다.
                 outSupportMinX = (std::max)(cellMinX, otherMinX);
                 outSupportMaxX = (std::min)(cellMaxX, otherMaxX);
-
-                // [임시 디버그 - 왜 허공에서 Sleeping인지 조사용]
-                if (block->GetPhysicsState() == PhysicsState::Sleeping)
-                {
-                    static int blockLogCount = 0;
-                    if (blockLogCount < 50)
-                    {
-                        FILE* file = nullptr;
-                        fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
-                        if (file != nullptr)
-                        {
-                            std::fprintf(file,
-                                "[IsCellSupported/BLOCK] block=%p cell=%d cellBottomY=%.1f cellCenterX=%.1f "
-                                "other=%p otherState=%d otherCell=%d otherTopY=%.1f otherMinX=%.1f otherMaxX=%.1f\n",
-                                block, cellIndex, cellBottomY, cellCenterX,
-                                other, static_cast<int>(other->GetPhysicsState()), j, otherTopY, otherMinX, otherMaxX);
-                            std::fclose(file);
-                        }
-                        ++blockLogCount;
-                    }
-                }
                 return true;
             }
         }
@@ -520,20 +542,21 @@ bool PhysicsManager::IsCellTouchingAnySupport(Block* block, int cellIndex) const
     return false;
 }
 
-bool PhysicsManager::RestsOnBlock(Block* upper, Block* lower) const
+int PhysicsManager::CountCellsRestingOnBlock(Block* upper, Block* lower) const
 {
     // [성능] BuildRestingChildrenMap이 모든 블록 쌍(n²)에 대해 이 함수를 부르므로, 명백히 멀리 떨어진
     // 쌍은 칸 단위 모서리 계산 없이 블록 원점 Y거리만으로 먼저 걸러낸다 (IsCellSupported와 같은 이유)
     if (std::fabs(upper->GetRenderPosition().y - lower->GetRenderPosition().y) > Constants::SUPPORT_BROADPHASE_MAX_BLOCK_EXTENT)
     {
-        return false;
+        return 0;
     }
+
+    int restingCellCount = 0;
 
     for (int i = 0; i < upper->GetCellCount(); ++i)
     {
         float cellTopY = 0.0f, cellBottomY = 0.0f, cellMinX = 0.0f, cellMaxX = 0.0f;
         GetCellSupportBounds(upper, i, cellTopY, cellBottomY, cellMinX, cellMaxX);
-        float cellCenterX = (cellMinX + cellMaxX) * 0.5f;
 
         for (int j = 0; j < lower->GetCellCount(); ++j)
         {
@@ -541,27 +564,29 @@ bool PhysicsManager::RestsOnBlock(Block* upper, Block* lower) const
             GetCellSupportBounds(lower, j, lowerTopY, lowerBottomY, lowerMinX, lowerMaxX);
 
             // 여기도 마찬가지로 upper의 바닥은 lower의 "윗면"과 비교해야 한다
-            // [경계값 버그 3 — GetCellSupportRange와 같은 버그] 반칸 단위 착지 시 cellCenterX가
-            // lowerMinX/lowerMaxX와 정확히 같아지는 경우, 엄격한 부등호면 "얹혀있지 않음"으로 판정돼서
-            // childrenOf 맵에 아예 안 잡히고(위 블록이 이 아래 블록의 자식으로 등록조차 안 됨), 결합
-            // 무게중심 계산에서 완전히 빠져버린다 — 이게 반칸 단위 무게 인식이 특히 이상했던 원인 중 하나.
-            bool centerOverlapsLower = cellCenterX >= lowerMinX && cellCenterX <= lowerMaxX;
+            // [근본 수정 — GetCellSupportRange와 같은 이유] 칸 중심이 아래 블록 위에 있어야만(절반 초과)
+            // "얹혀 있다"고 인정하던 이분법을 걷어내고, 두 칸의 X 범위가 조금이라도 겹치면 얹힌 것으로
+            // 본다. 실제 물리에서는 살짝만 걸쳐도(칼날 위 접촉이라도) 그 무게가 고스란히 아래로
+            // 전달돼야 한다. 서브셀(반칸) 단위 착지의 "정확히 50%" 걸침에서 등록 여부가 뒤집히던 것도
+            // 같이 없어진다.
+            bool overlapsLower = cellMaxX > lowerMinX && cellMinX < lowerMaxX;
             bool isRestingOnLower = cellBottomY >= lowerTopY - Constants::SUPPORT_CHECK_TOLERANCE &&
                 cellBottomY <= lowerTopY + Constants::SUPPORT_CHECK_TOLERANCE;
 
-            if (centerOverlapsLower && isRestingOnLower)
+            if (overlapsLower && isRestingOnLower)
             {
-                return true;
+                ++restingCellCount;
+                break; // 이 upper 칸은 이미 lower 위에 얹힌 걸로 셌으니, lower의 다른 칸과 또 겹쳐도 중복 세지 않는다
             }
         }
     }
 
-    return false;
+    return restingCellCount;
 }
 
-std::unordered_map<Block*, std::vector<Block*>> PhysicsManager::BuildRestingChildrenMap() const
+PhysicsManager::RestingChildrenMap PhysicsManager::BuildRestingChildrenMap() const
 {
-    std::unordered_map<Block*, std::vector<Block*>> childrenOf;
+    RestingChildrenMap childrenOf;
     std::vector<Block*> allBlocks = BlockManager::GetInstance().GetAllBlocks();
 
     for (Block* child : allBlocks)
@@ -574,29 +599,51 @@ std::unordered_map<Block*, std::vector<Block*>> PhysicsManager::BuildRestingChil
             continue;
         }
 
+        // [무게 분배 — 여러 블록에 걸쳐 얹힌 경우의 중복 계산 방지, 실전에서 발견된 버그 수정] child가
+        // 서로 다른 여러 base 위에 한 칸씩 나눠 걸쳐 있을 수 있다(예: L자가 서로 다른 두 블록 위에
+        // 한 칸씩). 예전엔 "얹혀 있는지"만 boolean으로 봐서, 걸친 base 각각에 child의 무게 전체를
+        // 그대로 등록했다 — 그러면 각 base가 "내가 child 전체 무게를 다 받친다"고 중복 계산해서,
+        // 실제로는 두 base가 나눠 받쳐 충분히 안정적인 구조도 양쪽 다 불안정으로 오판했다. 여기서
+        // child가 각 base 위에 몇 칸씩 얹혀 있는지 먼저 다 세서, 총 지지 칸 수 대비 비율만큼만
+        // 그 base에 무게를 배분한다.
+        std::vector<std::pair<Block*, int>> basesWithCellCount;
+        int totalRestingCells = 0;
         for (Block* base : allBlocks)
         {
-            if (base != child && RestsOnBlock(child, base))
+            if (base == child)
             {
-                childrenOf[base].push_back(child);
+                continue;
             }
+
+            int cellCount = CountCellsRestingOnBlock(child, base);
+            if (cellCount > 0)
+            {
+                basesWithCellCount.push_back({ base, cellCount });
+                totalRestingCells += cellCount;
+            }
+        }
+
+        for (const std::pair<Block*, int>& entry : basesWithCellCount)
+        {
+            float weightFraction = static_cast<float>(entry.second) / static_cast<float>(totalRestingCells);
+            childrenOf[entry.first].push_back({ child, weightFraction });
         }
     }
 
     return childrenOf;
 }
 
-void PhysicsManager::AccumulateSupportedMass(Block* base, std::vector<Block*>& visited,
-    const std::unordered_map<Block*, std::vector<Block*>>& childrenOf,
+void PhysicsManager::AccumulateSupportedMass(Block* base, float weightFraction, std::vector<Block*>& visited,
+    const RestingChildrenMap& childrenOf,
     float& outTotalMass, float& outWeightedX) const
 {
-    outTotalMass += base->GetMass();
+    outTotalMass += base->GetMass() * weightFraction;
     // [무게 전달 — 콜리전과 안 싸우는 버전] 실제 m_position 대신 GetEffectiveWeightPositionWorld()를
     // 쓴다 — 기울어지는 중인 블록은 순수 회전만으로는 실제 위치가 거의 안 바뀌어서, 실제 위치만 보면
     // 위쪽이 아무리 기울어도 아래 블록이 전혀 못 느낀다. 이 함수는 m_position/충돌/렌더링은 전혀
     // 안 건드리고 "pivot을 축으로 지금 각도까지 진짜 swing했다면 어디 있을지"만 계산해서 돌려주므로,
     // 여기 무게 합산 용도로만 안전하게 쓸 수 있다(Block.h의 설명 참고).
-    outWeightedX += base->GetMass() * base->GetEffectiveWeightPositionWorld().x;
+    outWeightedX += base->GetMass() * weightFraction * base->GetEffectiveWeightPositionWorld().x;
 
     auto it = childrenOf.find(base);
     if (it == childrenOf.end())
@@ -604,8 +651,10 @@ void PhysicsManager::AccumulateSupportedMass(Block* base, std::vector<Block*>& v
         return;
     }
 
-    for (Block* child : it->second)
+    for (const std::pair<Block*, float>& entry : it->second)
     {
+        Block* child = entry.first;
+        float childWeightFraction = entry.second;
         bool alreadyVisited = std::find(visited.begin(), visited.end(), child) != visited.end();
         // Toppling(이미 무너지는 중)인 블럭은 더 이상 자기 무게를 아래로 전달하지 않는다고 취급 —
         // 넘어지고 있는 조각까지 계속 하중으로 잡으면, 그 조각이 떨어져 나가는 동안 아래쪽이 계속 불안정하다고 오판한다
@@ -614,31 +663,12 @@ void PhysicsManager::AccumulateSupportedMass(Block* base, std::vector<Block*>& v
         if (canRestOnBase)
         {
             visited.push_back(child);
-            AccumulateSupportedMass(child, visited, childrenOf, outTotalMass, outWeightedX);
+            AccumulateSupportedMass(child, weightFraction * childWeightFraction, visited, childrenOf, outTotalMass, outWeightedX);
         }
     }
 }
 
-void PhysicsManager::MarkDescendantsDeferred(Block* base, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf, std::unordered_set<Block*>& outDeferred) const
-{
-    auto it = childrenOf.find(base);
-    if (it == childrenOf.end())
-    {
-        return;
-    }
-
-    for (Block* child : it->second)
-    {
-        // insert()가 true(=새로 들어감)를 돌려줄 때만 재귀 — 이미 있으면 그 아래도 이미 처리된 것이므로
-        // 사이클/중복 경로가 있어도 무한 재귀 없이 안전하다.
-        if (outDeferred.insert(child).second)
-        {
-            MarkDescendantsDeferred(child, childrenOf, outDeferred);
-        }
-    }
-}
-
-bool PhysicsManager::ComputeSupportDebugInfo(Block* block, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf, float& outMinX, float& outMaxX, float& outCombinedComX) const
+bool PhysicsManager::ComputeSupportDebugInfo(Block* block, const RestingChildrenMap& childrenOf, float& outMinX, float& outMaxX, float& outCombinedComX) const
 {
     bool hasSupport = false;
 
@@ -677,20 +707,12 @@ bool PhysicsManager::ComputeSupportDebugInfo(Block* block, const std::unordered_
     std::vector<Block*> visited = { block };
     float totalMass = 0.0f;
     float weightedX = 0.0f;
-    AccumulateSupportedMass(block, visited, childrenOf, totalMass, weightedX);
+    AccumulateSupportedMass(block, 1.0f, visited, childrenOf, totalMass, weightedX);
     outCombinedComX = weightedX / totalMass;
     return true;
 }
 
-bool PhysicsManager::ComputeSupportDebugInfo(Block* block, float& outMinX, float& outMaxX, float& outCombinedComX) const
-{
-    // [디버그 전용] F1 오버레이에서 블록 하나씩 개별 호출되는 드문 경로라, 매번 새로 계산해도 괜찮다.
-    // 매 프레임 도는 물리 스텝(ResolveBalance)은 이 버전이 아니라 아래의 childrenOf를 받는 버전을 쓴다.
-    std::unordered_map<Block*, std::vector<Block*>> childrenOf = BuildRestingChildrenMap();
-    return ComputeSupportDebugInfo(block, childrenOf, outMinX, outMaxX, outCombinedComX);
-}
-
-bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf)
+bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const RestingChildrenMap& childrenOf)
 {
     float supportMinX = 0.0f;
     float supportMaxX = 0.0f;
@@ -708,24 +730,6 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::un
         block->ResetImbalanceTimer();
 
         return false;
-    }
-
-    // [임시 디버그 - 왜 안 넘어지는지 조사용] 처음 300번 호출까지만 supportMinX/MaxX/centerOfMassX를 파일로 남긴다.
-    {
-        static int logCount = 0;
-        if (logCount < 300)
-        {
-            FILE* file = nullptr;
-            fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
-            if (file != nullptr)
-            {
-                std::fprintf(file, "[ResolveBalance] block=%p supportMinX=%.1f supportMaxX=%.1f centerOfMassX=%.1f imbalance=%.1f\n",
-                    block, supportMinX, supportMaxX, centerOfMassX,
-                    centerOfMassX < supportMinX ? centerOfMassX - supportMinX : (centerOfMassX > supportMaxX ? centerOfMassX - supportMaxX : 0.0f));
-                std::fclose(file);
-            }
-            ++logCount;
-        }
     }
 
     // [진짜 중력 토크] 순간적으로 각속도를 꽂아넣던 예전 방식(TUMBLE_ANGULAR_VELOCITY 킥) 대신, 무게중심이
@@ -795,9 +799,17 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::un
         // 지지 범위 경계에 딱 걸치는 경우가 많아 이 DEADZONE 안쪽 구간에 자주 들어가고, 그때마다 전부
         // 오른쪽으로만 쏠렸던 것 — 실전에서 관찰된 "반칸 걸치면 오른쪽으로 도는 경향"과 정확히 일치한다.
         // isImbalanced의 오른쪽 조건과 완전히 같은 기준으로 판정해야 방향이 일관된다.
-        bool tippingRight = centerOfMassX > supportMaxX - Constants::IMBALANCE_DEADZONE;
-        float pivotX = tippingRight ? supportMaxX : supportMinX;
-        float pivotY = Constants::FLOOR_TOP_Y;
+        // [레이캐스트로 방향 확정 — "반칸 걸치면 항상 오른쪽으로 넘어간다"는 실전 재현 버그 수정]
+        // 예전엔 무게중심(centerOfMassX)이 supportMaxX - DEADZONE 경계의 어느 쪽에 있는지로만 방향을
+        // 정했다. 반칸(정확히 50%) 단위로 걸친 경우 무게중심이 그 경계에 거의 딱 붙어버리는데, 여러
+        // 단계를 거쳐 계산된 값(칸 회전→AABB→클리핑→가중평균)이라 부동소수점 오차가 어느 쪽으로
+        // 튈지 예측하기 어렵고, 실전에서 "항상 오른쪽"처럼 한쪽으로 쏠려 보이는 원인이 됐다.
+        // 진짜 물리적으로 맞는 기준은 "내 칸이 지지 범위보다 더 튀어나간(=바닥이 없는) 쪽"이므로,
+        // 지지 중인 칸들의 raw 왼쪽/오른쪽 모서리에서 직접 레이캐스트를 쏴서 그 모서리 바로 너머에
+        // 진짜로 바닥이 없는지 확인한다 — 이건 "겹침 몇 %"가 아니라 "거기 뭔가 있냐 없냐"라는 이분법
+        // 질문이라 정확히 50%여도 흔들리지 않는다.
+        bool leftEdgeUnsupported = false;
+        bool rightEdgeUnsupported = false;
         for (int i = 0; i < block->GetCellCount(); ++i)
         {
             if (!IsCellSupported(block, i))
@@ -806,10 +818,50 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::un
             }
             float cellTopY = 0.0f, cellBottomY = 0.0f, cellMinX = 0.0f, cellMaxX = 0.0f;
             GetCellSupportBounds(block, i, cellTopY, cellBottomY, cellMinX, cellMaxX);
-            float edgeX = tippingRight ? cellMaxX : cellMinX;
-            if (std::fabs(edgeX - pivotX) < 0.01f)
+
+            float unusedHitDistance = 0.0f;
+            if (!RaycastDownForSupport({ cellMinX, cellBottomY }, block, unusedHitDistance))
             {
-                pivotY = cellBottomY;
+                leftEdgeUnsupported = true;
+            }
+            if (!RaycastDownForSupport({ cellMaxX, cellBottomY }, block, unusedHitDistance))
+            {
+                rightEdgeUnsupported = true;
+            }
+        }
+
+        // 정확히 한쪽 모서리에서만"바닥 없음"이 확인되면 그쪽으로 확정한다. 양쪽 다 지지되거나
+        // (다른 칸이 만드는 불균형처럼, 이 칸 자체는 안 넘어가는 경우) 양쪽 다 안 되는(드문) 경우엔
+        // 판단할 근거가 없으므로 기존 무게중심 비교로 되돌아간다.
+        bool tippingRight = (leftEdgeUnsupported != rightEdgeUnsupported)
+            ? rightEdgeUnsupported
+            : (centerOfMassX > supportMaxX - Constants::IMBALANCE_DEADZONE);
+        float pivotX = tippingRight ? supportMaxX : supportMinX;
+
+        // [레이캐스트로 pivot Y 확정 — 실전에서 발견된 버그 수정] 예전엔 "내 칸의 raw 모서리(cellMaxX/
+        // cellMinX)가 pivotX와 오차 0.01px 이내로 정확히 같은 칸"을 찾아서 그 칸의 바닥 Y를 썼다. 그런데
+        // pivotX는 "지지대 쪽" 모서리(예: 아래 블록의 실제 폭)라서, 내 칸 폭이 지지대와 정확히 안 맞으면
+        // (칸이 지지대보다 넓거나 위치가 살짝 어긋나면) 못 찾고 pivotY가 기본값(FLOOR_TOP_Y)에 그대로
+        // 남았다 — 그러면 ApplyGravityTorque의 평행축 정리(r.x²+r.y²)가 실제보다 훨씬 먼 거리로 계산돼
+        // 회전 저항(관성모멘트)이 폭증한다. 토크 "방향"은 맞아서 넘어가야 할 쪽으로 밀리긴 하는데, 저항이
+        // 너무 커서 거의 못 느낄 정도로 느리게 돈다 — 탑 위쪽 블록이 넘어가야 할 방향으로 안 넘어가는
+        // 것처럼 보이던 원인. pivotX가 속한 내 칸을 찾아 그 칸 바닥에서 직접 레이캐스트를 쏴서 "진짜로
+        // 맞은 지지면의 Y"를 쓰면, 폭이 어긋나든 말든 항상 정확한 pivotY를 얻는다.
+        float pivotY = Constants::FLOOR_TOP_Y;
+        for (int i = 0; i < block->GetCellCount(); ++i)
+        {
+            float cellTopY = 0.0f, cellBottomY = 0.0f, cellMinX = 0.0f, cellMaxX = 0.0f;
+            GetCellSupportBounds(block, i, cellTopY, cellBottomY, cellMinX, cellMaxX);
+            // pivotX가 이 칸의 가로 범위 안에 있어야(=이 칸이 그 지지 지점을 담당해야) 레이캐스트 후보로 삼는다
+            if (pivotX < cellMinX - 0.01f || pivotX > cellMaxX + 0.01f)
+            {
+                continue;
+            }
+
+            float hitDistance = 0.0f;
+            if (RaycastDownForSupport({ pivotX, cellBottomY }, block, hitDistance))
+            {
+                pivotY = cellBottomY + hitDistance;
                 break;
             }
         }
@@ -820,19 +872,6 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::un
     {
         pivot = block->GetImbalancePivot();
     }
-
-    // [되돌림 — pivot 고정을 여기서 계속 걸어두는 건 위험한 시도였다] 무게중심 이동을 흉내내려고
-    // SetTopplePivot/ExtendPivotLock을 이 에피소드 내내 걸어봤는데, Integrate()의 pivot 고정 분기는
-    // 매 프레임 m_position을 "그 순간 각도" 하나만으로 다시 계산해버린다 — 그 사이 콜리전 해결
-    // (ResolveFloorCollision/ResolveBlockCollisions, Step()의 2단계)이 침투를 밀어내려고 넣은 위치
-    // 보정을, 바로 다음 프레임 Integrate가 통째로 덮어써서 무효로 만든다. 그러면 스윙 경로가 옆
-    // 블록과 겹칠 때마다 콜리전이 매번 밀어내려 시도하지만 다음 프레임에 또 같은 자리로 되돌아가고,
-    // 그 과정에서 매번 주입되는 각속도 임펄스만 계속 쌓여서(위치는 안 바뀌는데 각속도만 폭주) 옆
-    // 블록에 낀 채로 헛도는 블록이 나왔다(실전 확인됨 — O자 블록이 T자 위에서 겹친 채 회전만 함).
-    // 무게중심 위치가 실제로 아래 블록 계산에 반영되려면, 이 pivot 고정 override 대신 그냥 중력의
-    // 선형(위치) 성분을 평소처럼 충돌 해결에 맡기는 게 맞다 — ApplyGravityTorque는 회전만 보조하고,
-    // 위치는 이미 모든 다른 블록에 쓰는 것과 같은(그리고 이미 검증된) F=ma+충돌 임펄스 경로로 움직이게
-    // 둔다. BeginToppling() 직후의 SetTopplePivot()(짧은 0.15초 창)은 원래 의도대로 그대로 둔다.
 
     block->ApplyGravityTorque(pivot, deltaTime);
 
@@ -857,7 +896,6 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const std::un
         else
         {
             block->BeginToppling();
-            block->SetTopplePivot(pivot);
         }
     }
     else if (block->GetImbalanceTimer() >= Constants::TOPPLE_STUCK_TIMEOUT)
@@ -936,7 +974,7 @@ void PhysicsManager::RemoveToppledBlocks()
         }
     }
 }
-void PhysicsManager::SettleToppledBlocks(const std::unordered_map<Block*, std::vector<Block*>>& childrenOf)
+void PhysicsManager::SettleToppledBlocks(const RestingChildrenMap& childrenOf)
 {
     for (Block* block : BlockManager::GetInstance().GetAllBlocks())
     {
@@ -969,8 +1007,6 @@ void PhysicsManager::SettleToppledBlocks(const std::unordered_map<Block*, std::v
                 hasSupport = true;
             }
         }
-
-        LogSettleAttempt(block, hasSupport); // [임시 디버그]
 
         if (!hasSupport)
         {
@@ -1052,23 +1088,6 @@ void PhysicsManager::TrySleepAll(float deltaTime)
             if (IsCellSupported(block, i))
             {
                 hasSupport = true;
-            }
-        }
-
-        // [임시 디버그 - 중력이 안 먹는 것처럼 보이는 Awake 블록 조사용] 지지대가 없는데(=중력을 받아
-        // 계속 떨어지고 있어야 함) 거의 안 움직이는 Awake 블록이 있으면, 매 프레임 위치/속도를 남겨서
-        // Integrate/ApplyGravity가 실제로 도는지, 뭔가 매 프레임 속도를 도로 0으로 죽이는지 확인한다.
-        // 원인을 찾으면 지워도 된다.
-        if (!hasSupport && block->GetSpeedSquared() < 1.0f)
-        {
-            FILE* file = nullptr;
-            fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
-            if (file != nullptr)
-            {
-                Vector2 pos = block->GetRenderPosition();
-                std::fprintf(file, "[TrySleepAll/STUCK-NO-SUPPORT] block=%p pos=(%.1f,%.1f) angle=%.2f speed=%.2f angVel=%.2f activeTimer=%.2f\n",
-                    block, pos.x, pos.y, block->GetAngle(), std::sqrt(block->GetSpeedSquared()), block->GetAngularVelocity(), block->GetActiveTimer());
-                std::fclose(file);
             }
         }
 

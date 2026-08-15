@@ -46,12 +46,6 @@ public:
 	// 낙하 속도(FALL_STEP_INTERVAL)와 무관하게 즉시 다 떨어져버리기 때문에 이동 없는 버전이 따로 필요하다.
 	bool CanStepDown() const;
 
-	// [그리드-연속 경계] CanStepDown()이 false가 되어 락이 걸린 시점엔, 다음 서브셀로는 못 가지만
-	// 그 사이(0 ~ SUBCELL_SIZE px 미만)에 실제 장애물까지 남은 여유가 있을 수 있다. 그 여유를 계산해서
-	// Land()가 그리드 칸에 딱 맞춰 배치하는 대신 실제 접촉 위치 가까이에 배치할 수 있게 해준다.
-	// 그리드 낙하는 항상 회전 없는(axis-aligned) 상태라 셀별 바닥 Y 비교만으로 정확히 계산 가능하다.
-	float ComputeContinuousDropOffset() const;
-
 	//부호로 방향을 받아 모양을 90도 회전시키되, 회전한 모양이 안 들어가면 취소한다
 	void Rotate(int direction);
 	// 바닥 상태 전용: 착지 이후의 물리 연산(흔들림 등). Awake 상태에서만 호출되어야 한다.
@@ -134,10 +128,6 @@ public:
 	// PhysicsManager가 Awake 상태 블럭만 골라내려고 씀
 	PhysicsState GetPhysicsState() const;
 
-
-	// 아래로 파고든 만큼(penetration) 위로 밀어내고 낙하를 멈춘다. 지금은 ResolveBlockPairCollision(블럭끼리
-	// 충돌, 3단계에서 회전 반영 예정)에서만 쓰고, 바닥 충돌은 ResolveRigidCollision으로 대체되었다
-	void ResolveVerticalPenetration(float penetration);
 
 	// [강체물리 2단계] 회전을 반영한 진짜 강체 충돌 처리. contactPoint(월드 좌표)는 실제로 부딪힌 지점,
 	// normal은 그 지점에서 밀어내야 할 방향(바닥이면 항상 위 방향 (0,-1)), penetration은 파고든 깊이(px).
@@ -236,11 +226,6 @@ public:
 	// 아니어도, 무한 진동보다는 그 자리에서 멈추는 쪽이 낫다는 판단.
 	void ForceStabilize();
 
-	// [넘어짐 피벗 고정] pivotWorld(월드 좌표)를 축으로 삼아, TOPPLE_PIVOT_LOCK_DURATION 동안 그 지점이
-	// 화면에서 안 움직이도록 위치를 고정한 채 회전만 시킨다 — 무게중심 축 회전 때문에 접촉 모서리가
-	// 허공으로 붕 뜨는 걸 막는 용도. BeginToppling() 직후에 호출해서 쓴다.
-	void SetTopplePivot(Vector2 pivotWorld);
-
 protected:
 	// unique_ptr<Collider>가 불완전 타입을 가리키므로, 기본 생성자는 반드시 .cpp(Collider가 완전한 타입인 곳)에서 정의한다.
 	Block();
@@ -271,21 +256,6 @@ protected:
 	float m_mass = 1.0f;
 	float m_activeTimer = 0.0f;
 
-	// [성능] RotateLocalPointToWorld가 매 호출마다 sin/cos를 다시 계산하지 않도록 캐싱한다.
-	// 물리 루프(지지 판정/충돌)에서 같은 블럭에 대해 한 프레임에도 수십~수백 번 불릴 수 있고,
-	// 특히 Sleeping 블럭은 m_angle이 그대로라 매번 재계산하는 게 완전히 낭비였다.
-	// const 메서드 안에서 갱신해야 해서 mutable로 둔다.
-	mutable float m_cachedTrigAngle = 0.0f;
-	mutable float m_cachedCosAngle = 1.0f;
-	mutable float m_cachedSinAngle = 0.0f;
-	mutable bool m_trigCacheValid = false;
-
-	// [넘어짐 피벗 고정] SetTopplePivot()이 설정하는 상태. m_pivotLockTimeRemaining이 0보다 큰 동안,
-	// Integrate()가 위치를 그냥 적분하는 대신 m_pivotWorldTarget이 고정되도록 역산해서 덮어쓴다.
-	Vector2 m_pivotWorldTarget = { 0.0f, 0.0f };
-	Vector2 m_pivotOffsetAtCapture = { 0.0f, 0.0f };
-	float m_pivotCaptureAngle = 0.0f;
-	float m_pivotLockTimeRemaining = 0.0f;
 	// [넘어짐 재발 판정 기준각] 마지막으로 안정이 확인된 각도. Land()에서 0으로, ConfirmRestingAngle()
 	// 호출마다 그 순간 각도로 갱신된다.
 	float m_restAngleReference = 0.0f;

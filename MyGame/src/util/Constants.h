@@ -90,10 +90,6 @@ namespace Constants
 	// 오히려 프레임이 계속 느려지는 악순환에 빠진다 — 그 대신 초과분은 그냥 버린다.
 	constexpr int PHYSICS_MAX_SUBSTEPS = 5;
 	constexpr float WAKE_IMPACT_SPEED_THRESHOLD = 60.0f;
-	// 바닥/다른 블럭에 파고들었다 밀려날 때, 속도를 0으로 죽이는 대신 이 비율만큼만 남기고 반대로 튕겨서
-	// 서서히 잦아드는 흔들림(wobble)을 만든다. 1.0에 가까울수록 오래 튕기고, 0에 가까울수록 즉시 멈춤.
-	// 블럭은 탱탱볼이 아니라 콘크리트/나무토막에 가까워야 해서 0에 아주 가깝게 잡는다
-	constexpr float BOUNCE_RESTITUTION = 0.02f;
 
 	// [위치 보정] 파고든 깊이 중 이 정도(px)는 그냥 무시한다("slop"). 0까지 완벽하게 밀어내려고 하면
 	// 미세한 파고듦-보정-재파고듦이 반복되며 계속 떨리는데, 아주 약간의 파고듦은 그냥 봐줘서 그 진동을 끊는다
@@ -171,12 +167,6 @@ namespace Constants
 	// 않으면 미세한 회전이 감쇠 없이 계속 남아 SLEEP_ANGULAR_THRESHOLD를 살짝살짝 넘나들며 영원히
 	// Sleep에 못 들어가는 원인이 된다.
 	constexpr float GROUNDED_ANGULAR_DAMPING = 0.75f;
-
-	// [넘어짐 피벗 고정] 넘어가기 시작한 직후 이 시간(초) 동안은, 무게중심이 아니라 접촉 모서리를 축으로
-	// 고정한 채로 회전시킨다. 회전을 무게중심 기준으로만 하면 바닥에 붙어있던 반대쪽 모서리가 허공으로
-	// 붕 뜨는 것처럼 보이는데(실제 도미노는 접촉 모서리가 축이라 안 그럼), 이 시간 동안만 접촉 모서리를
-	// 고정해서 그 부자연스러움을 없앤다. 이후엔 자연스럽게 자유낙하로 넘어간다.
-	constexpr float TOPPLE_PIVOT_LOCK_DURATION = 0.15f;
 
 	// [무한 재넘어짐 방지] 옆 블록 등에 막혀서 실제로는 못 넘어가는 블록이 Sleep 없이 이만큼 연속으로
 	// BeginToppling되면(Awake로 잠깐 돌아왔다가 ResolveBalance가 곧바로 또 넘어뜨리는 걸 반복하면),

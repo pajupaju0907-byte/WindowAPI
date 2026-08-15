@@ -4,7 +4,7 @@
 #include "../util/Types.h"
 #include <vector>
 #include <unordered_map>
-#include <unordered_set>
+#include <utility>
 
 class Block;
 
@@ -13,6 +13,12 @@ class Block;
 class PhysicsManager
 {
 public:
+    // [무게 분배] base -> 그 위에 얹혀 무게를 넘기는 자식들의 목록. 자식 하나가 서로 다른 여러 base
+    // 위에 걸쳐 있을 수 있어서(예: L자가 두 블록 위에 한 칸씩), 자식마다 "이 base가 그 자식 무게의
+    // 몇 %를 부담하는지"(0~1, 그 자식의 모든 base에 걸친 비율 합은 1)를 같이 들고 있다.
+    // BuildRestingChildrenMap 주석 참고.
+    using RestingChildrenMap = std::unordered_map<Block*, std::vector<std::pair<Block*, float>>>;
+
     static PhysicsManager& GetInstance();
 
     // BlockManager가 가진 블럭 전체를 순회하며 Awake 상태만 골라 ApplyGravity + Integrate 호출
@@ -22,20 +28,32 @@ public:
     void ApplyGravity(Block* block);
 
     // block이 차지하는 칸들 중 바닥을 가장 깊이 파고든 정도를 찾아서, 파고들었으면 밀어냄
-    void ResolveFloorCollision(Block* block);
+    // [좌우 편향 방지] swapContactOrder 설명은 ResolveBlockPairCollision 주석 참고.
+    void ResolveFloorCollision(Block* block, bool swapContactOrder);
 
     // [책임 분리] "겹쳤는지/어디를/얼마나 겹쳤는지" 판정은 CollisionManager::DetectPairCollision이 전담한다.
     // 여기서는 그 결과를 가지고 "그래서 어떻게 반응할지"(WakeUp 여부, 임펄스 적용)만 담당한다.
     // 둘 다 Awake면 쌍방향(ResolveRigidCollisionWithBlock), 한쪽만 Awake면 Sleeping인 쪽을
     // 바닥처럼 고정된 것으로 취급(ResolveRigidCollision)한다.
-    void ResolveBlockPairCollision(Block* block, Block* other);
+    // [좌우 편향 방지 — 세로 I블럭이 완전 대칭으로 착지해도 매번 같은 방향(오른쪽)으로 도는 버그 수정]
+    // CollisionManager::BuildManifold가 manifold의 두 접촉점을 항상 "왼쪽=[0], 오른쪽=[1]" 순서로
+    // 결정론적으로 고정해서 돌려주는데, 이 둘을 순차(왼쪽 먼저 -> 오른쪽 나중)로 풀면 먼저 처리된 점이
+    // 나중 점의 계산에 쓰일 속도/각속도를 먼저 바꿔버려서, 완벽하게 좌우 대칭인 충돌(예: 세로로 곧게
+    // 선 I블럭이 수평으로 바닥에 닿는 경우)에서도 매번 같은 부호의 잔여 각속도가 남는다. 이 잔여값이
+    // 작아도 매 프레임 항상 같은 방향이라 Integrate()에 누적되며 "무조건 한쪽으로 도는 힘"으로 보인다.
+    // 두 점을 진짜 연립으로 동시에 푸는 것(예전에 임펄스 폭주 버그로 되돌렸던 방식)보다 안전한 최소
+    // 수정으로, swapContactOrder는 어느 쪽이 먼저 처리되는지를 뒤집는 스위치다 — 실제로 어떤 주기로
+    // 뒤집어야 편향이 상쇄되는지는 PhysicsManager.h의 m_swapContactOrderThisStep 선언부 주석 참고
+    // (반복 단위로 뒤집으면 안 되고 프레임 단위로 뒤집어야 한다).
+    void ResolveBlockPairCollision(Block* block, Block* other, bool swapContactOrder);
     // 존재하는 모든 블럭 쌍(중복 없이 한 번씩)에 대해 ResolveBlockPairCollision을 돌림
-    void ResolveBlockCollisions();
+    void ResolveBlockCollisions(bool swapContactOrder);
 
-    // cellPosition(월드 좌표, TILE_SIZE 정사각형 기준)이 바닥이나 self가 아닌 다른 블럭 위에 "안정적으로"
-    // 얹혀 있는지 판정한다(칸 중심이 실제로 그 위에 있어야 함 — 엄격). Sleep 가능 여부/붕괴 판정처럼
-    // "여기서 잠들어도/버텨도 되는가"를 결정하는 곳에서만 쓴다. GetCellSupportRange의 지지 여부만 쓰는
-    // 얇은 래퍼 — 지지 범위(겹치는 폭)까지 필요하면 GetCellSupportRange를 직접 쓸 것.
+    // [레이캐스트 기반] 이 칸의 바닥 모서리(왼쪽 끝/가운데/오른쪽 끝)에서 각각 수직 아래로 레이를 쏴서,
+    // 그 지점 바로 아래에 실제로 지지면(바닥 또는 다른 블럭의 윗면)이 있는지 확인한다. 칸의 X범위가
+    // 지지대의 X범위와 "겹치는지"만 보는 방식(GetCellSupportRange)과 달리, 서로 떨어진 두 지지대 사이의
+    // 완전한 허공 위에 칸이 걸친 경우까지 세 지점 중 하나라도 실제로 뭔가에 맞았는지로 직접 확인한다.
+    // Sleep 가능 여부/붕괴 판정처럼 "여기서 잠들어도/버텨도 되는가"를 결정하는 곳에서만 쓴다.
     bool IsCellSupported(Block* block, int cellIndex) const;
 
     // [경계값 버그 방지 — 실전 확인됨] IsCellSupported와 같은 기준으로 지지 여부를 판정하되, 지지된다면
@@ -65,7 +83,7 @@ public:
     // 안 하도록 건너뛴다. "지지대가 먼저 무너지는 게 맞다"는 설계 결정에 따른 것 — 아래(더 근본적인 지지대)가
     // 이미 불안정을 처리 중이면, 그 위에 얹힌 것들은 자기 좁은 접촉면만 보고 따로 넘어지지 않고 아래의
     // 붕괴에 묻어간다. 아래가 실제로 넘어지면(Toppling) 다음 프레임에 지지를 잃었다고 자연히 감지해서 반응한다.
-    bool ResolveBalance(Block* block, float deltaTime, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf);
+    bool ResolveBalance(Block* block, float deltaTime, const RestingChildrenMap& childrenOf);
 
     // Toppling 상태인 블럭 중 화면 아래로 완전히 벗어난 것들을 BlockManager에서 제거
     void RemoveToppledBlocks();
@@ -77,7 +95,7 @@ public:
     // 걸려 넘어져야 할 자세 그대로 얼어붙었다). childrenOf는 이 스텝에서 이미 계산된 것을 그대로 받아
     // 재사용한다(성능, ResolveBalance와 같은 이유). Sleeping으로 곧바로 재우진 않는다 — 그건 TrySleepAll의
     // rest timer가 판단한다.
-    void SettleToppledBlocks(const std::unordered_map<Block*, std::vector<Block*>>& childrenOf);
+    void SettleToppledBlocks(const RestingChildrenMap& childrenOf);
 
     // 개별 블럭이 아니라 탑 전체가 안정적인지 판단 (전체 판단은 매니저의 책임)
     bool CheckGlobalStability() const;
@@ -89,17 +107,15 @@ public:
     // 무게중심(outCombinedComX)을 계산해서 그대로 돌려준다 — ResolveBalance와 완전히 같은 계산이라,
     // F1 디버그 오버레이가 "지금 이 블럭이 안정적이라고 판단된 이유"를 화면에 그대로 그릴 수 있게 해준다.
     // 지지대가 없으면 false를 반환(이 경우 outMinX/outMaxX/outCombinedComX는 의미 없음)
-    bool ComputeSupportDebugInfo(Block* block, float& outMinX, float& outMaxX, float& outCombinedComX) const;
-
-    // [디버그 시각화 성능] 위 ComputeSupportDebugInfo를 여러 블럭에 대해 연달아 부를 거라면(예: F1
-    // 오버레이가 화면의 모든 블럭을 순회), 이 버전으로 childrenOf를 한 번만 만들어 넘겨 재사용해야 한다.
-    // 4-인자 버전을 블럭마다 부르면 그때마다 BuildRestingChildrenMap()을 처음부터 다시 계산해서
-    // 물리 스텝에서 고쳤던 것과 같은 n³ 비용이 디버그 오버레이 경로에 그대로 남는다.
-    bool ComputeSupportDebugInfo(Block* block, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf, float& outMinX, float& outMaxX, float& outCombinedComX) const;
+    bool ComputeSupportDebugInfo(Block* block, const RestingChildrenMap& childrenOf, float& outMinX, float& outMaxX, float& outCombinedComX) const;
 
     // [성능] "누가 누구 위에 얹혀 있는지"를 전체 블럭 쌍을 훑어서 한 번에 계산해둔다. 물리 스텝(Step)뿐
     // 아니라 디버그 오버레이(RenderManager::DrawSupportDebug)도 이걸 한 번만 만들어서 재사용해야 한다.
-    std::unordered_map<Block*, std::vector<Block*>> BuildRestingChildrenMap() const;
+    // [무게 분배] 자식 하나가 여러 base 위에 걸쳐 있으면, 그 자식이 각 base 위에 몇 칸씩 얹혀 있는지를
+    // 세서 총 얹힌 칸 수 대비 비율로 무게를 나눠 배분한다 — 안 그러면 각 base가 "내가 그 자식 무게
+    // 전체를 다 받친다"고 중복 계산해서, 실제로는 두 base가 나눠 받쳐 안정적인 구조도 양쪽 다 불안정으로
+    // 오판한다(L자 블록이 서로 다른 두 블록 위에 한 칸씩 걸쳤을 때 둘 다 무너지던 버그로 실전 확인됨).
+    RestingChildrenMap BuildRestingChildrenMap() const;
 
 private:
     PhysicsManager() = default;
@@ -108,11 +124,21 @@ private:
     PhysicsManager& operator=(const PhysicsManager&) = delete;
     // [지지 판정 통합] cellIndex번 칸의 회전된 네 꼭짓점(GetCellRotatedCorners)에서 "가장 아래 Y"와
     // "가로 범위(min~max X)"를 뽑아준다. 회전이 없으면 기존 cellBottomY/cellCenterX 계산과 똑같이 나오고,
-    // 기울어진 블럭이면 실제 기운 모양대로 나온다 — IsCellSupported/RestsOnBlock/ComputeSupportDebugInfo가
-    // 전부 이 함수 하나로 지지 판정용 좌표를 얻게 해서, 세 곳이 서로 다른 좌표계를 보는 문제를 없앤다.
+    // 기울어진 블럭이면 실제 기운 모양대로 나온다 — IsCellSupported/CountCellsRestingOnBlock/
+    // ComputeSupportDebugInfo가 전부 이 함수 하나로 지지 판정용 좌표를 얻게 해서, 세 곳이 서로 다른
+    // 좌표계를 보는 문제를 없앤다.
     void GetCellSupportBounds(Block* block, int cellIndex, float& outTopY, float& outBottomY, float& outMinX, float& outMaxX) const;
-    // upper의 칸 중 하나라도 lower 위에 얹혀 있는지(IsCellSupported와 같은 판정을, 특정 블록 한 쌍으로 좁혀서) 검사
-    bool RestsOnBlock(Block* upper, Block* lower) const;
+    // upper의 칸 중 몇 개가 lower 위에 얹혀 있는지(IsCellSupported와 같은 판정을, 특정 블록 한 쌍으로
+    // 좁혀서) 센다. BuildRestingChildrenMap이 이 개수로 무게 분배 비율을 계산하는 데 쓴다 — 예전엔
+    // "하나라도 얹혔는지"만 boolean으로 봤는데, 그러면 여러 base에 걸친 블록의 무게를 base마다 몇 칸씩
+    // 받치는지 구분 못 해서 나눠 계산할 수가 없었다.
+    int CountCellsRestingOnBlock(Block* upper, Block* lower) const;
+
+    // [레이캐스트] origin에서 수직 아래 방향으로 레이를 쏴서, X가 origin.x를 포함하는 지지면(바닥 또는
+    // 다른 블럭의 윗면) 중 가장 가까운 것까지의 거리를 outHitDistance로 돌려준다(못 찾으면 false).
+    // selfBlock은 레이를 쏘는 블럭 자신 — 자기 자신은 지지 제공자 후보에서 제외해야 해서 필요하다.
+    // IsCellSupported가 이 함수로 칸의 바닥 모서리를 따라 여러 지점을 검사하는 데 쓴다.
+    bool RaycastDownForSupport(Vector2 origin, Block* selfBlock, float& outHitDistance) const;
 
     // [고정 timestep] 예전 Update()의 본문 전체 — 항상 PHYSICS_FIXED_TIMESTEP 크기로만 호출된다.
     // Update()가 렌더 프레임의 가변 deltaTime을 여기로 몇 번 나눠서 넘길지 결정한다.
@@ -121,16 +147,21 @@ private:
     // [고정 timestep] 프레임 간 남은 시간을 누적해뒀다가, PHYSICS_FIXED_TIMESTEP만큼씩 Step()에 넘긴다.
     float m_accumulator = 0.0f;
 
+    // [좌우 편향 방지 — 반복 단위 교대의 한계 보완] 반복(iteration) 안에서 순서를 뒤집으면, 뒤늦은
+    // 반복일수록 처리할 잔여 속도가 이미 작아져 있어서 편향 크기가 훨씬 작다 — "왼쪽 먼저"인 앞쪽
+    // 반복(0, 2번째)의 큰 편향이 "오른쪽 먼저"인 뒤쪽 반복(1, 3번째)의 작은 편향으로 다 상쇄되지
+    // 못하고 매 프레임 같은 방향(왼쪽 먼저 쪽)으로 순 잔차가 남는다. 그 대신 이 프레임 전체(4회 반복
+    // 전부)를 한 방향으로 통일하고, 그 방향을 프레임마다(Step() 호출마다) 뒤집는다 — 그러면 크기가
+    // 비슷한 "이번 프레임 전체 편향"과 "다음 프레임 전체 편향"이 반대 부호로 맞물려서 훨씬 깨끗하게 상쇄된다.
+    bool m_swapContactOrderThisStep = false;
+
     // [연쇄 붕괴] base 위에 (직접 또는 다른 블럭을 거쳐 간접적으로) 얹힌 모든 블럭을 재귀로 훑어서,
     // base를 포함한 전체의 질량 합과 무게중심(x) 가중합을 누적한다. ResolveBalance가 "이 블럭 자신"이 아니라
     // "이 블럭이 떠받치고 있는 전체 무더기"의 무게중심으로 판정하게 하려고 필요하다 —
     // 안 그러면 위에 삐딱하게 얹힌 블럭만 넘어지고 밑을 받치는 블럭은 자기 발판만 보고 멀쩡하다고 착각한다.
-    void AccumulateSupportedMass(Block* base, std::vector<Block*>& visited, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf, float& outTotalMass, float& outWeightedX) const;
-
-    // [지지대 우선 붕괴] base가 이번 프레임에 불균형으로 처리됐을 때(ResolveBalance가 true를 반환),
-    // base 위에 (직접/간접으로) 얹힌 모든 블록을 재귀로 찾아서 outDeferred에 추가한다. Step()이 이
-    // 집합에 있는 블록은 이번 프레임 자기 몫의 개별 ResolveBalance 호출을 건너뛴다 — "지지대가 먼저
-    // 무너지는 게 맞다"는 설계 결정에 따라, 아래(더 근본적인 지지대)가 이미 불안정을 처리 중이면 위에
-    // 얹힌 것들은 자기 좁은 접촉면만 보고 따로 넘어지지 않고 아래의 붕괴에 묻어가게 한다.
-    void MarkDescendantsDeferred(Block* base, const std::unordered_map<Block*, std::vector<Block*>>& childrenOf, std::unordered_set<Block*>& outDeferred) const;
+    // [무게 분배] weightFraction은 지금까지 내려오면서 곱해진 "이 base가 자신의 위쪽 경로를 통해 실제로
+    // 부담하는 비율"(0~1)이다. 최상위 호출은 1.0(자기 자신은 전부 자기 몫)로 시작하고, 자식으로 재귀할
+    // 때마다 그 자식이 여러 base에 걸쳐 있으면 childrenOf에 저장된 자식별 비율을 곱해서 내려간다 —
+    // 그래야 여러 base에 나눠 걸친 자식의 무게가 각 base에 중복 없이 비율만큼만 반영된다.
+    void AccumulateSupportedMass(Block* base, float weightFraction, std::vector<Block*>& visited, const RestingChildrenMap& childrenOf, float& outTotalMass, float& outWeightedX) const;
 };

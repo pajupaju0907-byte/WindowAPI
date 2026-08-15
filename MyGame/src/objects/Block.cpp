@@ -8,62 +8,6 @@
 #include "../util/Constants.h"
 #include "../util/MathUtil.h"
 #include <cmath>
-#include <cstdio>
-
-namespace
-{
-	// [관찰 가능성] 물리 상태 전이를 Visual Studio 출력 창 + physics_debug.log 양쪽에 남긴다. Sleep<->Wake가
-	// 얼마나 자주 반복되는지, 어느 지점(WakeUp/Sleep/Land/BeginToppling)에서 전이가 일어났는지 코드 안 보고
-	// 바로 확인용. [기존엔 OutputDebugStringA만 썼는데, 그러면 ResolveBalance의 imbalance 로그(파일)와
-	// 상태 전이 시점을 나란히 놓고 비교할 방법이 없어서 "왜 이 블럭이 이 순간 깨어났는지"를 못 봤다 —
-	// 그래서 파일에도 같이 남기고, 그 순간의 위치/각도/속도까지 같이 찍어서 원인 추적이 되게 한다]
-	void LogStateChange(const Block* block, const char* reason)
-	{
-		char text[96];
-		std::snprintf(text, sizeof(text), "[Physics] Block %p: %s\n", block, reason);
-		OutputDebugStringA(text);
-
-		FILE* file = nullptr;
-		fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
-		if (file == nullptr)
-		{
-			return;
-		}
-
-		Vector2 pos = block->GetRenderPosition();
-		std::fprintf(file, "[StateChange] block=%p reason=%s pos=(%.1f,%.1f) angle=%.2f speed=%.1f angVel=%.2f\n",
-			block, reason, pos.x, pos.y, block->GetAngle(), std::sqrt(block->GetSpeedSquared()), block->GetAngularVelocity());
-		std::fclose(file);
-	}
-
-	// [임시 디버그 - 위로 튐 원인 조사용] 충돌 반응 한 번으로 위쪽(-y) 속도가 비정상적으로 커지면
-	// 그 순간의 전후 상태를 파일로 남긴다. 원인을 찾으면 이 함수와 호출부는 지워도 된다.
-	void LogIfSuspiciousUpwardVelocity(const char* where, const void* block, Vector2 contactPoint, Vector2 normal,
-		float penetration, float velocityAlongNormalBefore, float restitution, float impulseMagnitude,
-		Vector2 velocityBefore, Vector2 velocityAfter, float angularVelocityBefore, float angularVelocityAfter,
-		int physicsState, float pivotLockTimeRemaining)
-	{
-		if (velocityAfter.y > -20.0f)
-		{
-			return;
-		}
-
-		FILE* file = nullptr;
-		fopen_s(&file, "C:\\Users\\inha\\Desktop\\WobbleBlock\\WindowAPI\\physics_debug.log", "a");
-		if (file == nullptr)
-		{
-			return;
-		}
-
-		std::fprintf(file,
-			"[%s] block=%p state=%d pivotLock=%.3f contact=(%.1f,%.1f) normal=(%.2f,%.2f) pen=%.2f vAlongNormalBefore=%.1f "
-			"restitution=%.3f impulse=%.1f vBefore=(%.1f,%.1f) vAfter=(%.1f,%.1f) wBefore=%.1f wAfter=%.1f\n",
-			where, block, physicsState, pivotLockTimeRemaining, contactPoint.x, contactPoint.y, normal.x, normal.y, penetration,
-			velocityAlongNormalBefore, restitution, impulseMagnitude, velocityBefore.x, velocityBefore.y,
-			velocityAfter.x, velocityAfter.y, angularVelocityBefore, angularVelocityAfter);
-		std::fclose(file);
-	}
-}
 
 Block::Block() = default;
 Block::~Block() = default;
@@ -163,64 +107,6 @@ bool Block::CanStepDown() const
 	return CanOccupy(m_gridX, nextGridY);
 }
 
-float Block::ComputeContinuousDropOffset() const
-{
-	Vector2 gridPixelPos = { m_gridX * Constants::SUBCELL_SIZE, m_gridY * Constants::SUBCELL_SIZE };
-
-	// 다음 서브셀로는 못 간다는 것만 확정됐을 뿐이라, 최대로 내려갈 수 있는 한도는 일단 한 서브셀
-	// 미만으로 잡아둔다 — 그 이상 여유가 있었다면애초에 CanStepDown()이 true였을 것이다.
-	float maxDrop = Constants::SUBCELL_SIZE;
-
-	for (int i = 0; i < CELL_COUNT; ++i)
-	{
-		Vector2 cellMin = gridPixelPos + m_cellShape[i] * Constants::TILE_SIZE;
-		Vector2 cellMax = cellMin + Vector2{ Constants::TILE_SIZE, Constants::TILE_SIZE };
-
-		// 바닥(발판)까지 남은 세로 여유
-		bool overlapsFloorX = cellMax.x > Constants::FLOOR_LEFT_X && cellMin.x < Constants::FLOOR_RIGHT_X;
-		if (overlapsFloorX)
-		{
-			float distanceToFloor = Constants::FLOOR_TOP_Y - cellMax.y;
-			if (distanceToFloor < maxDrop) maxDrop = distanceToFloor;
-		}
-
-		// 이미 착지한 다른 블럭까지 남은 세로 여유. 회전된(GetCellRotatedCorners) 좌표를 써서, 넘어져서
-		// 기운 블럭 위에 떨어지는 경우도 실제 기운 모양을 기준으로 정확히 계산한다
-		for (Block* other : BlockManager::GetInstance().GetAllBlocks())
-		{
-			if (other == this || other->GetPhysicsState() == PhysicsState::Airborne)
-			{
-				continue;
-			}
-
-			for (int j = 0; j < other->GetCellCount(); ++j)
-			{
-				Vector2 otherCorners[4];
-				other->GetCellRotatedCorners(j, otherCorners);
-
-				float otherMinX = otherCorners[0].x, otherMaxX = otherCorners[0].x, otherTopY = otherCorners[0].y;
-				for (int c = 1; c < 4; ++c)
-				{
-					if (otherCorners[c].x < otherMinX) otherMinX = otherCorners[c].x;
-					if (otherCorners[c].x > otherMaxX) otherMaxX = otherCorners[c].x;
-					if (otherCorners[c].y < otherTopY) otherTopY = otherCorners[c].y;
-				}
-
-				bool overlapsX = cellMax.x > otherMinX && cellMin.x < otherMaxX;
-				if (overlapsX)
-				{
-					float distanceToOther = otherTopY - cellMax.y;
-					if (distanceToOther < maxDrop) maxDrop = distanceToOther;
-				}
-			}
-		}
-	}
-
-	// 이론상 항상 >= 0이어야 하지만(현재 위치는 이미 안 겹치는 상태), 부동소수점 오차 방지용 clamp
-	if (maxDrop < 0.0f) maxDrop = 0.0f;
-	return maxDrop;
-}
-
 void Block::Rotate(int direction)
 {
 	if (!m_canRotate) return;
@@ -260,71 +146,13 @@ void Block::ApplyForce(Vector2 force)
 // 매 프레임 새로 힘을 받아야 하므로 마지막에 누적값을 리셋한다.
 void Block::Integrate(float deltaTime)
 {
-	// [피벗 고정 중 속도 누수 방지] 잠겨 있는 동안은 m_velocity가 위치에 전혀 반영되지 않는데(아래
-	// pivotLockTimeRemaining>0 분기 참고), 그렇다고 중력 가속도 누적까지 막지 않으면 잠긴 시간(최대
-	// TOPPLE_PIVOT_LOCK_DURATION초) 내내 m_velocity.y가 화면엔 안 보이는 채로 계속 커진다. 이게
-	// 잠금이 풀리는 순간 한꺼번에 위치에 반영되면서, 그리고 그 부풀려진 속도로 다음 바닥/블럭
-	// 충돌이 "매우 빠른 충돌"로 오판되어 큰 반발 임펄스를 만들면서 위로 튀는 원인이 된다.
-	// 잠긴 동안은 힘을 그냥 버린다 — 그 시간 동안의 중력은 피벗이 대신 떠받치고 있다고 보는 것.
-	bool isPivotLocked = m_pivotLockTimeRemaining > 0.0f;
-
-	if (!isPivotLocked)
-	{
-		Vector2 acceleration = m_accumulatedForce * (1.0f / m_mass);
-		m_velocity += acceleration * deltaTime;
-	}
+	Vector2 acceleration = m_accumulatedForce * (1.0f / m_mass);
+	m_velocity += acceleration * deltaTime;
 
 	m_angle += m_angularVelocity * deltaTime;
-
-	if (isPivotLocked)
-	{
-		// [넘어짐 피벗 고정] 위치를 그냥 적분하는 대신, 캡처 시점 이후 회전한 만큼(deltaAngle)만큼
-		// m_pivotOffsetAtCapture(무게중심->피벗 오프셋)를 같이 돌려서, 그 결과가 여전히
-		// m_pivotWorldTarget을 가리키도록 무게중심 위치를 역산한다. RotateLocalPointToWorld와
-		// 같은 회전 공식이지만, 로컬 셀 좌표가 아니라 이미 월드 단위인 오프셋 벡터에 바로 적용한다.
-		float deltaAngle = m_angle - m_pivotCaptureAngle;
-		float radians = MathUtil::DegreesToRadians(deltaAngle);
-		float cosAngle = static_cast<float>(std::cos(radians));
-		float sinAngle = static_cast<float>(std::sin(radians));
-		Vector2 rotatedOffset
-		{
-			m_pivotOffsetAtCapture.x * cosAngle - m_pivotOffsetAtCapture.y * sinAngle,
-			m_pivotOffsetAtCapture.x * sinAngle + m_pivotOffsetAtCapture.y * cosAngle
-		};
-
-		Vector2 centerOfMassWorldTarget = m_pivotWorldTarget - rotatedOffset;
-		m_position = centerOfMassWorldTarget - GetCenterOfMassLocal() * Constants::TILE_SIZE;
-
-		m_pivotLockTimeRemaining -= deltaTime;
-
-		// [핸드오프] 잠금이 이 프레임에 끝나면, 다음 프레임부터는 m_velocity로 실제 위치를 적분하게 된다.
-		// 잠긴 동안 쌓였을 수 있는(충돌 반응 등에서 온) 남은 속도를 그대로 이어받는 대신, 지금 이 순간
-		// 실제로 보이던 회전 운동(무게중심이 피벗을 축으로 각속도 ω로 돌 때의 접선 속도)으로 다시
-		// 계산해서 덮어쓴다 — 회전으로 눈에 보이던 움직임과 정확히 이어지는 속도라, 딱 끊거나(0으로 리셋)
-		// 갑자기 튀지 않고 부드럽게 일반 물리로 넘어간다.
-		if (m_pivotLockTimeRemaining <= 0.0f)
-		{
-			Vector2 centerOfMassWorld = m_position + GetCenterOfMassLocal() * Constants::TILE_SIZE;
-			Vector2 pivotToCenter = centerOfMassWorld - m_pivotWorldTarget;
-			float angularVelocityRad = MathUtil::DegreesToRadians(m_angularVelocity);
-			m_velocity = { -pivotToCenter.y * angularVelocityRad, pivotToCenter.x * angularVelocityRad };
-		}
-	}
-	else
-	{
-		m_position += m_velocity * deltaTime;
-	}
+	m_position += m_velocity * deltaTime;
 
 	m_accumulatedForce = { 0.0f, 0.0f };
-}
-
-void Block::SetTopplePivot(Vector2 pivotWorld)
-{
-	Vector2 centerOfMassWorld = GetRenderPosition() + GetCenterOfMassLocal() * Constants::TILE_SIZE;
-	m_pivotWorldTarget = pivotWorld;
-	m_pivotOffsetAtCapture = pivotWorld - centerOfMassWorld;
-	m_pivotCaptureAngle = m_angle;
-	m_pivotLockTimeRemaining = Constants::TOPPLE_PIVOT_LOCK_DURATION;
 }
 
 void Block::SetGridPosition(int gridX, int gridY)
@@ -364,20 +192,14 @@ Vector2 Block::RotateLocalPointToWorld(Vector2 localPoint) const
 	Vector2 centerOfMassLocal = GetCenterOfMassLocal();
 	Vector2 offset = (localPoint - centerOfMassLocal) * Constants::TILE_SIZE;
 
-	// [성능] m_angle이 지난 호출 때와 같으면 sin/cos를 다시 계산하지 않고 캐시를 재사용한다
-	if (!m_trigCacheValid || m_cachedTrigAngle != m_angle)
-	{
-		float radians = MathUtil::DegreesToRadians(m_angle);
-		m_cachedCosAngle = static_cast<float>(std::cos(radians));
-		m_cachedSinAngle = static_cast<float>(std::sin(radians));
-		m_cachedTrigAngle = m_angle;
-		m_trigCacheValid = true;
-	}
+	float radians = MathUtil::DegreesToRadians(m_angle);
+	float cosAngle = static_cast<float>(std::cos(radians));
+	float sinAngle = static_cast<float>(std::sin(radians));
 
 	Vector2 rotatedOffset
 	{
-		offset.x * m_cachedCosAngle - offset.y * m_cachedSinAngle,
-		offset.x * m_cachedSinAngle + offset.y * m_cachedCosAngle
+		offset.x * cosAngle - offset.y * sinAngle,
+		offset.x * sinAngle + offset.y * cosAngle
 	};
 
 	Vector2 centerOfMassWorld = GetRenderPosition() + centerOfMassLocal * Constants::TILE_SIZE;
@@ -502,14 +324,6 @@ PhysicsState Block::GetPhysicsState() const
 	return m_physicsState;
 }
 
-void Block::ResolveVerticalPenetration(float penetration)
-{
-	// 파고든 만큼 위로 밀어내되, 속도를 0으로 죽이지 않고 반대 방향으로 감쇠시켜 튕겨낸다.
-	// 매 프레임 반복되면서 튕기는 폭이 점점 줄어들어 서서히 멈추는 흔들림(wobble)이 된다
-	m_position.y -= penetration;
-	m_velocity.y = -m_velocity.y * Constants::BOUNCE_RESTITUTION;
-}
-
 // [강체물리 2단계] 회전을 반영한 진짜 강체 충돌.
 // 핵심 아이디어: 무게중심 정중앙을 맞은 게 아니라 한쪽 구석(접촉점)을 맞았기 때문에,
 // 그 충격의 일부가 "밀림(선속도)"이 아니라 "회전(각속도)"으로 새어나간다.
@@ -562,8 +376,8 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 		return;
 	}
 
-	// 4) 강체 충돌 임펄스 공식 (상대는 안 움직이는 바닥/무한 질량이라고 가정한 버전):
-	//        j = -(1+e) * v_n / (1/m + (r×n)^2 / I)
+	// 4) 강체 충돌 임펄스 공식 (반발 없음, 상대는 안 움직이는 바닥/무한 질량이라고 가정한 버전):
+	//        j = -v_n / (1/m + (r×n)^2 / I)
 	//    분모의 (r×n)^2/I 항이 핵심 — contactPoint가 무게중심에서 멀수록(=더 잘 회전시키는 위치일수록)
 	//    이 항이 커져서 결과적으로 튕기는 힘(선속도 증가분) 중 더 많은 몫이 회전으로 빠져나간다.
 	//    r×n, r×impulse는 2차원 벡터의 외적(스칼라값): a×b = a.x*b.y - a.y*b.x
@@ -571,14 +385,9 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 	float momentOfInertia = GetMomentOfInertia();
 	float inverseMassTerm = (1.0f / m_mass) + (rCrossNormal * rCrossNormal) / momentOfInertia;
 
-	// [Resting contact] 접촉점 속도(무게중심 속도 + 회전 접선 속도)가 WAKE_IMPACT_SPEED_THRESHOLD보다
-	// 작으면 "진짜 충돌"이 아니라 얹혀서 미세하게 흔들리거나 회전 중인 상태로 본다 — restitution을 0으로
-	// 눌러서 안 튕기게 한다. 안 그러면 기울어진 블록의 회전 접선 속도가 노멀 성분으로 새어들어와
-	// 매 프레임 "가짜 충돌"처럼 반복 튕기며 안정 접촉 떨림과, 심하면 위로 튀는 현상까지 만든다.
-	float restitution = (-velocityAlongNormal < Constants::WAKE_IMPACT_SPEED_THRESHOLD) ? 0.0f : Constants::BOUNCE_RESTITUTION;
-	float impulseMagnitude = -(1.0f + restitution) * velocityAlongNormal / inverseMassTerm;
-
-	Vector2 velocityBeforeImpulse = m_velocity; // [임시 디버그]
+	// [반발 제거] 튕김 없이 순수 비탄성 충돌로 처리한다 — 부딪힌 방향의 속도를 완전히 흡수만 하고
+	// 되돌려주지 않는다.
+	float impulseMagnitude = -velocityAlongNormal / inverseMassTerm;
 
 	// 5) 구한 임펄스를 선속도/각속도 양쪽에 나눠 반영한다
 	Vector2 impulse = normal * impulseMagnitude;
@@ -588,30 +397,35 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 	float newAngularVelocityRad = angularVelocityRad + angularImpulse / momentOfInertia;
 
 	// 6) [마찰] normal에 수직인 방향(tangent = 접촉면과 나란한 방향)으로의 미끄러짐을 붙잡는다.
-	//    계산 방식은 normal 임펄스랑 똑같은데(그냥 축만 tangent로 바꾼 것), 반발(튕김)은 없어서 계수에 (1+e)가 안 붙고,
-	//    대신 "수직으로 누르는 힘(=방금 구한 impulseMagnitude)의 FRICTION_COEFFICIENT배"를 못 넘게 clamp한다 —
+	//    계산 방식은 normal 임펄스랑 똑같은데(그냥 축만 tangent로 바꾼 것), 대신 "수직으로 누르는
+	//    힘(=방금 구한 impulseMagnitude)의 FRICTION_COEFFICIENT배"를 못 넘게 clamp한다 —
 	//    실제 마찰도 세게 눌려 있을수록(수직항력이 클수록) 더 세게 붙잡을 수 있는 것과 같은 원리
-	Vector2 tangent = { -normal.y, normal.x };
-	float velocityAlongTangent = contactVelocity.x * tangent.x + contactVelocity.y * tangent.y;
-	float rCrossTangent = r.x * tangent.y - r.y * tangent.x;
-	float tangentInverseMassTerm = (1.0f / m_mass) + (rCrossTangent * rCrossTangent) / momentOfInertia;
-	float frictionImpulseMagnitude = -velocityAlongTangent / tangentInverseMassTerm;
+	// [넘어지는 중엔 마찰 생략 — 실전 로그로 확인된 "절벽 모서리에 코너가 낀 채 못 빠져나감" 버그 수정]
+	// Toppling 블록의 회전하는 코너가 바닥/블록 모서리에 걸친 채로 계속 회전해서 빠져나가야 하는 상황에서,
+	// 매 스텝 이 마찰이 그 회전(접선 방향 미끄러짐)을 붙잡아버리면 중력 토크가 계속 걸리는데도 각속도가
+	// 오히려 줄어든다 — 위치는 거의 그대로, 각도만 아주 느리게 진동하다가 결국 TOPPLE_STUCK_TIMEOUT에
+	// 걸려 공중에 뜬 채로 ForceStabilize되는 것으로 physics_debug.log에서 실전 확인됨. 넘어지는 도중엔
+	// 마찰로 붙들 "정지 자세"가 아니므로 생략하고, 중력+수직 임펄스만으로 코너를 타고 계속 회전해
+	// 빠져나가게 한다.
+	if (m_physicsState != PhysicsState::Toppling)
+	{
+		Vector2 tangent = { -normal.y, normal.x };
+		float velocityAlongTangent = contactVelocity.x * tangent.x + contactVelocity.y * tangent.y;
+		float rCrossTangent = r.x * tangent.y - r.y * tangent.x;
+		float tangentInverseMassTerm = (1.0f / m_mass) + (rCrossTangent * rCrossTangent) / momentOfInertia;
+		float frictionImpulseMagnitude = -velocityAlongTangent / tangentInverseMassTerm;
 
-	float maxFriction = Constants::FRICTION_COEFFICIENT * std::fabs(impulseMagnitude);
-	if (frictionImpulseMagnitude > maxFriction) frictionImpulseMagnitude = maxFriction;
-	if (frictionImpulseMagnitude < -maxFriction) frictionImpulseMagnitude = -maxFriction;
+		float maxFriction = Constants::FRICTION_COEFFICIENT * std::fabs(impulseMagnitude);
+		if (frictionImpulseMagnitude > maxFriction) frictionImpulseMagnitude = maxFriction;
+		if (frictionImpulseMagnitude < -maxFriction) frictionImpulseMagnitude = -maxFriction;
 
-	Vector2 frictionImpulse = tangent * frictionImpulseMagnitude;
-	m_velocity += frictionImpulse * (1.0f / m_mass);
-	float frictionAngularImpulse = r.x * frictionImpulse.y - r.y * frictionImpulse.x;
-	newAngularVelocityRad += frictionAngularImpulse / momentOfInertia;
+		Vector2 frictionImpulse = tangent * frictionImpulseMagnitude;
+		m_velocity += frictionImpulse * (1.0f / m_mass);
+		float frictionAngularImpulse = r.x * frictionImpulse.y - r.y * frictionImpulse.x;
+		newAngularVelocityRad += frictionAngularImpulse / momentOfInertia;
+	}
 
 	m_angularVelocity = MathUtil::RadiansToDegrees(newAngularVelocityRad);
-
-	LogIfSuspiciousUpwardVelocity("ResolveRigidCollision", this, contactPoint, normal, penetration,
-		velocityAlongNormal, restitution, impulseMagnitude, velocityBeforeImpulse, m_velocity,
-		MathUtil::RadiansToDegrees(angularVelocityRad), m_angularVelocity,
-		static_cast<int>(m_physicsState), m_pivotLockTimeRemaining); // [임시 디버그]
 }
 
 // [강체물리 3단계] ResolveRigidCollision과 구조는 같지만, "상대가 안 움직인다"는 가정이 없어서
@@ -663,8 +477,8 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 		return;
 	}
 
-	// 4) 강체 충돌 임펄스 공식 (양쪽 다 움직이는 버전. ResolveRigidCollision의 분모에 other 항이 추가된 것뿐):
-	//        j = -(1+e) * v_n / (1/mA + 1/mB + (rA×n)^2/IA + (rB×n)^2/IB)
+	// 4) 강체 충돌 임펄스 공식 (반발 없음, 양쪽 다 움직이는 버전. ResolveRigidCollision의 분모에 other 항이 추가된 것뿐):
+	//        j = -v_n / (1/mA + 1/mB + (rA×n)^2/IA + (rB×n)^2/IB)
 	float rSelfCrossNormal = rSelf.x * normal.y - rSelf.y * normal.x;
 	float rOtherCrossNormal = rOther.x * normal.y - rOther.y * normal.x;
 	float momentOfInertiaSelf = GetMomentOfInertia();
@@ -674,14 +488,9 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 		(rSelfCrossNormal * rSelfCrossNormal) / momentOfInertiaSelf +
 		(rOtherCrossNormal * rOtherCrossNormal) / momentOfInertiaOther;
 
-	// [Resting contact] ResolveRigidCollision과 같은 이유로, 상대 접근 속도가 작으면(진짜 충돌이 아니면)
-	// restitution을 0으로 눌러서 안 튕기게 한다.
-	float restitution = (-velocityAlongNormal < Constants::WAKE_IMPACT_SPEED_THRESHOLD) ? 0.0f : Constants::BOUNCE_RESTITUTION;
-	float impulseMagnitude = -(1.0f + restitution) * velocityAlongNormal / inverseMassTerm;
+	// [반발 제거] ResolveRigidCollision과 같은 이유로 튕김 없이 순수 비탄성 충돌로 처리한다.
+	float impulseMagnitude = -velocityAlongNormal / inverseMassTerm;
 	Vector2 impulse = normal * impulseMagnitude;
-
-	Vector2 selfVelocityBeforeImpulse = m_velocity; // [임시 디버그]
-	Vector2 otherVelocityBeforeImpulse = other->m_velocity; // [임시 디버그]
 
 	// 5) 뉴턴의 3법칙: this는 +impulse(=other에게서 멀어지는 방향), other는 -impulse(=this에게서 멀어지는 방향)
 	m_velocity += impulse * (1.0f / m_mass);
@@ -695,42 +504,38 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 
 	// 6) [마찰] ResolveRigidCollision과 같은 방식, 양쪽(this/other) 다 관여하는 버전으로 확장한 것뿐이다.
 	//    normal에 수직인 tangent 방향으로의 상대 미끄러짐을 normal 임펄스 크기에 비례해서만 붙잡는다
-	Vector2 tangent = { -normal.y, normal.x };
-	float velocityAlongTangent = relativeVelocity.x * tangent.x + relativeVelocity.y * tangent.y;
-	float rSelfCrossTangent = rSelf.x * tangent.y - rSelf.y * tangent.x;
-	float rOtherCrossTangent = rOther.x * tangent.y - rOther.y * tangent.x;
+	// [넘어지는 중엔 마찰 생략] ResolveRigidCollision과 같은 이유 — this/other 중 하나라도 Toppling이면
+	// (다른 블록 모서리에 걸친 채 회전하며 빠져나가는 코너에) 마찰이 그 회전을 붙잡아 각속도를 죽이는 걸
+	// 막는다.
+	if (m_physicsState != PhysicsState::Toppling && other->m_physicsState != PhysicsState::Toppling)
+	{
+		Vector2 tangent = { -normal.y, normal.x };
+		float velocityAlongTangent = relativeVelocity.x * tangent.x + relativeVelocity.y * tangent.y;
+		float rSelfCrossTangent = rSelf.x * tangent.y - rSelf.y * tangent.x;
+		float rOtherCrossTangent = rOther.x * tangent.y - rOther.y * tangent.x;
 
-	float tangentInverseMassTerm = (1.0f / m_mass) + (1.0f / other->m_mass) +
-		(rSelfCrossTangent * rSelfCrossTangent) / momentOfInertiaSelf +
-		(rOtherCrossTangent * rOtherCrossTangent) / momentOfInertiaOther;
+		float tangentInverseMassTerm = (1.0f / m_mass) + (1.0f / other->m_mass) +
+			(rSelfCrossTangent * rSelfCrossTangent) / momentOfInertiaSelf +
+			(rOtherCrossTangent * rOtherCrossTangent) / momentOfInertiaOther;
 
-	float frictionImpulseMagnitude = -velocityAlongTangent / tangentInverseMassTerm;
-	float maxFriction = Constants::FRICTION_COEFFICIENT * std::fabs(impulseMagnitude);
-	if (frictionImpulseMagnitude > maxFriction) frictionImpulseMagnitude = maxFriction;
-	if (frictionImpulseMagnitude < -maxFriction) frictionImpulseMagnitude = -maxFriction;
+		float frictionImpulseMagnitude = -velocityAlongTangent / tangentInverseMassTerm;
+		float maxFriction = Constants::FRICTION_COEFFICIENT * std::fabs(impulseMagnitude);
+		if (frictionImpulseMagnitude > maxFriction) frictionImpulseMagnitude = maxFriction;
+		if (frictionImpulseMagnitude < -maxFriction) frictionImpulseMagnitude = -maxFriction;
 
-	Vector2 frictionImpulse = tangent * frictionImpulseMagnitude;
-	m_velocity += frictionImpulse * (1.0f / m_mass);
-	other->m_velocity -= frictionImpulse * (1.0f / other->m_mass);
+		Vector2 frictionImpulse = tangent * frictionImpulseMagnitude;
+		m_velocity += frictionImpulse * (1.0f / m_mass);
+		other->m_velocity -= frictionImpulse * (1.0f / other->m_mass);
 
-	float frictionAngularImpulseSelf = rSelf.x * frictionImpulse.y - rSelf.y * frictionImpulse.x;
-	float frictionAngularImpulseOther = rOther.x * frictionImpulse.y - rOther.y * frictionImpulse.x;
+		float frictionAngularImpulseSelf = rSelf.x * frictionImpulse.y - rSelf.y * frictionImpulse.x;
+		float frictionAngularImpulseOther = rOther.x * frictionImpulse.y - rOther.y * frictionImpulse.x;
 
-	newAngularVelocitySelfRad += frictionAngularImpulseSelf / momentOfInertiaSelf;
-	newAngularVelocityOtherRad -= frictionAngularImpulseOther / momentOfInertiaOther;
+		newAngularVelocitySelfRad += frictionAngularImpulseSelf / momentOfInertiaSelf;
+		newAngularVelocityOtherRad -= frictionAngularImpulseOther / momentOfInertiaOther;
+	}
 
 	m_angularVelocity = MathUtil::RadiansToDegrees(newAngularVelocitySelfRad);
 	other->m_angularVelocity = MathUtil::RadiansToDegrees(newAngularVelocityOtherRad);
-
-	// [임시 디버그]
-	LogIfSuspiciousUpwardVelocity("ResolveRigidCollisionWithBlock/self", this, contactPoint, normal, penetration,
-		velocityAlongNormal, restitution, impulseMagnitude, selfVelocityBeforeImpulse, m_velocity,
-		MathUtil::RadiansToDegrees(angularVelocitySelfRad), m_angularVelocity,
-		static_cast<int>(m_physicsState), m_pivotLockTimeRemaining);
-	LogIfSuspiciousUpwardVelocity("ResolveRigidCollisionWithBlock/other", other, contactPoint, normal * -1.0f, penetration,
-		-velocityAlongNormal, restitution, -impulseMagnitude, otherVelocityBeforeImpulse, other->m_velocity,
-		MathUtil::RadiansToDegrees(angularVelocityOtherRad), other->m_angularVelocity,
-		static_cast<int>(other->m_physicsState), other->m_pivotLockTimeRemaining);
 }
 
 void Block::ApplyGravityTorque(Vector2 pivotWorld, float deltaTime)
@@ -756,8 +561,6 @@ void Block::BeginToppling()
 {
 	// 속도/각속도를 인위적으로 바꾸지 않는다 — 그 순간의 실제 속도를 그대로 이어받아야 자연스럽다.
 	// 여기서 바뀌는 건 상태뿐이다. 이후로는 순수하게 진짜 물리(중력 + 바닥/블럭 충돌)만으로 움직인다
-	LogStateChange(this, "-> Toppling");
-
 	m_physicsState = PhysicsState::Toppling;
 	m_hasToppled = true;
 
@@ -850,7 +653,6 @@ bool Block::IsWedged() const
 
 void Block::ForceStabilize()
 {
-	LogStateChange(this, "-> ForceStabilize (stuck toppling loop)");
 	m_velocity = { 0.0f, 0.0f };
 	m_angularVelocity = 0.0f;
 
@@ -886,8 +688,6 @@ void Block::DampAngularVelocity(float dampingFactor)
 
 void Block::WakeUp()
 {
-	LogStateChange(this, "-> Awake (WakeUp)");
-
 	// [강제 취침 타임아웃] 여기서도 타이머를 리셋하지 않는다 — Sleep()과 동일한 이유:
 	// Sleep<->Wake를 반복하는 동안 m_activeTimer가 끊기지 않고 누적돼야 ForceSleepStuckBlocks가
 	// 3초를 채울 수 있다.
@@ -944,7 +744,6 @@ void Block::Sleep()
 	// 그래서 "진짜로 안정돼서 스스로 잠든" 경로(TrySleepAll)에서만 리셋하고, ForceStabilize가 억지로
 	// 재운 경우엔 카운트를 그대로 유지해서 다음 재판정에도 곧바로 다시 ForceStabilize로 조용히 멈추게 한다.
 
-	LogStateChange(this, "-> Sleeping");
 }
 void Block::AdvanceRestTimer(float deltaTime)
 {
@@ -972,13 +771,7 @@ float Block::GetActiveTimer() const
 
 void Block::Land()
 {
-	LogStateChange(this, "-> Awake (Land)");
-
-	// [그리드-연속 경계] 그리드 칸에 딱 맞춰 배치하는 대신, 실제 장애물까지 남은 여유(dropOffset)만큼
-	// 더 내려간 위치에 배치한다 — 최대 24px(한 서브셀)까지 남아있던 "허공에 뜬 채로 락" 간격이 사라져서,
-	// 착지 직후 잠깐 멈췄다가 다시 떨어지는 어색함 없이 바로 실제 접촉 위치에서 물리가 시작된다.
-	float dropOffset = ComputeContinuousDropOffset();
-	m_position = { m_gridX * Constants::SUBCELL_SIZE, m_gridY * Constants::SUBCELL_SIZE + dropOffset };
+	m_position = { m_gridX * Constants::SUBCELL_SIZE, m_gridY * Constants::SUBCELL_SIZE };
 	m_physicsState = PhysicsState::Awake;
 	m_activeTimer = 0.0f;
 	m_imbalanceTimer = 0.0f;
