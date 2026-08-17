@@ -18,6 +18,9 @@ namespace
 	{
 		switch (message)
 		{
+		case WM_CHAR:
+			InputManager::GetInstance().OnChar(static_cast<wchar_t>(wParam));
+			return 0;
 		case WM_DESTROY:
 			PostQuitMessage(0);
 			return 0;

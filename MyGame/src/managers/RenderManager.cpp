@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -120,6 +121,23 @@ void RenderManager::DrawFps(ID2D1RenderTarget* renderTarget)
 
 	renderTarget->DrawText(wideFpsText.c_str(), static_cast<UINT32>(wideFpsText.length()), GetOrCreateTextFormat(), layoutRect, textBrush.Get());
 }
+void RenderManager::DrawCloudDebugText(ID2D1RenderTarget* renderTarget, float heightMeters, int cloudCount)
+{
+	char text[64];
+	std::snprintf(text, sizeof(text), "Height: %.2fm / Clouds: %d", heightMeters, cloudCount);
+	std::wstring wideText(text, text + std::strlen(text));
+
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+	renderTarget->CreateSolidColorBrush(ToColorF(Constants::PHYSICS_DEBUG_TEXT_COLOR), textBrush.GetAddressOf());
+
+	float y = static_cast<float>(Constants::FPS_TEXT_MARGIN) + 24.0f;
+	D2D1_RECT_F layoutRect = D2D1::RectF(
+		static_cast<float>(Constants::FPS_TEXT_MARGIN), y,
+		static_cast<float>(Constants::WINDOW_WIDTH), y + 20.0f);
+
+	renderTarget->DrawText(wideText.c_str(), static_cast<UINT32>(wideText.length()), GetOrCreateTextFormat(), layoutRect, textBrush.Get());
+}
+
 void RenderManager::DrawHeightRecord(ID2D1RenderTarget* renderTarget, float heightMeters)
 {
 	char text[64];
@@ -169,6 +187,67 @@ void RenderManager::DrawScorePanel(ID2D1RenderTarget* renderTarget, Vector2 cent
 		static_cast<float>(Constants::WINDOW_WIDTH), center.y + panelHeight / 2.0f);
 
 	renderTarget->DrawText(wideText.c_str(), static_cast<UINT32>(wideText.length()), GetOrCreateCenteredTextFormat(), layoutRect, textBrush.Get());
+}
+void RenderManager::DrawNicknameInputPanel(ID2D1RenderTarget* renderTarget, Vector2 center, Vector2 panelSize, const std::wstring& currentInput)
+{
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+	renderTarget->CreateSolidColorBrush(ToColorF(Constants::HEIGHT_RECORD_TEXT_COLOR), textBrush.GetAddressOf());
+
+	const float lineHeight = Constants::HEIGHT_RECORD_FONT_SIZE + Constants::HEIGHT_RECORD_PANEL_PADDING;
+	// 창 전체 폭이 아니라 실제 팝업 그림 폭 안으로 좁혀야, 문장이 길 때 그림 밖으로 삐져나오지 않고
+	// (기본 동작인) word wrap으로 자연스럽게 줄바꿈된다
+	const float left = center.x - panelSize.x / 2.0f;
+	const float right = center.x + panelSize.x / 2.0f;
+
+	std::wstring promptText = L"닉네임을 입력하세요 (Enter로 확정)";
+	D2D1_RECT_F promptRect = D2D1::RectF(left, center.y - lineHeight, right, center.y);
+	renderTarget->DrawText(promptText.c_str(), static_cast<UINT32>(promptText.length()), GetOrCreateCenteredTextFormat(), promptRect, textBrush.Get());
+
+	std::wstring inputText = currentInput + L"_";
+	D2D1_RECT_F inputRect = D2D1::RectF(left, center.y, right, center.y + lineHeight);
+	renderTarget->DrawText(inputText.c_str(), static_cast<UINT32>(inputText.length()), GetOrCreateCenteredTextFormat(), inputRect, textBrush.Get());
+}
+void RenderManager::DrawRankingList(ID2D1RenderTarget* renderTarget, const std::vector<RankingEntry>& rankings,
+	const std::vector<Vector2>& nameCellCenters, const std::vector<Vector2>& scoreCellCenters,
+	Vector2 nameCellSize, Vector2 scoreCellSize)
+{
+	// Ranking.png 배경 칸이 크림색이라, 흰 글씨(다른 패널들의 HEIGHT_RECORD_TEXT_COLOR)가 아니라
+	// 어두운 색(RANKING_TEXT_COLOR)이어야 눈에 보인다
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush;
+	renderTarget->CreateSolidColorBrush(ToColorF(Constants::RANKING_TEXT_COLOR), textBrush.GetAddressOf());
+
+	size_t rowCount = rankings.size();
+	rowCount = std::min(rowCount, nameCellCenters.size());
+	rowCount = std::min(rowCount, scoreCellCenters.size());
+
+	for (size_t i = 0; i < rowCount; ++i)
+	{
+		const RankingEntry& entry = rankings[i];
+
+		// 닉네임 입력 단계(TitleScene의 NICKNAME_MAX_LENGTH=12)에서 이미 길이를 막아두긴 했지만,
+		// DB에 다른 경로로 더 긴 값이 들어올 수도 있으니 그리는 쪽에서도 한 번 더 잘라서 칸 밖으로
+		// 삐져나오지 않게 방어한다.
+		constexpr size_t MAX_DISPLAY_NAME_LENGTH = 12;
+		std::string displayName = entry.name;
+		if (displayName.length() > MAX_DISPLAY_NAME_LENGTH)
+		{
+			displayName = displayName.substr(0, MAX_DISPLAY_NAME_LENGTH) + "...";
+		}
+
+		std::wstring wideName(displayName.begin(), displayName.end());
+		D2D1_RECT_F nameRect = D2D1::RectF(
+			nameCellCenters[i].x - nameCellSize.x / 2.0f, nameCellCenters[i].y - nameCellSize.y / 2.0f,
+			nameCellCenters[i].x + nameCellSize.x / 2.0f, nameCellCenters[i].y + nameCellSize.y / 2.0f);
+		renderTarget->DrawText(wideName.c_str(), static_cast<UINT32>(wideName.length()), GetOrCreateCenteredTextFormat(), nameRect, textBrush.Get());
+
+		char scoreText[32];
+		std::snprintf(scoreText, sizeof(scoreText), "%.1fm", entry.score);
+		std::wstring wideScore(scoreText, scoreText + std::strlen(scoreText));
+		D2D1_RECT_F scoreRect = D2D1::RectF(
+			scoreCellCenters[i].x - scoreCellSize.x / 2.0f, scoreCellCenters[i].y - scoreCellSize.y / 2.0f,
+			scoreCellCenters[i].x + scoreCellSize.x / 2.0f, scoreCellCenters[i].y + scoreCellSize.y / 2.0f);
+		renderTarget->DrawText(wideScore.c_str(), static_cast<UINT32>(wideScore.length()), GetOrCreateCenteredTextFormat(), scoreRect, textBrush.Get());
+	}
 }
 void RenderManager::DrawBlockColliders(ID2D1RenderTarget* renderTarget)
 {

@@ -69,3 +69,10 @@ struct SpriteInfo
     std::string id;
     Microsoft::WRL::ComPtr<ID2D1Bitmap> bitmap;
 };
+
+// RankingManager가 온라인 랭킹 목록을 주고받을 때 쓰는 항목 하나(닉네임 + 점수)
+struct RankingEntry
+{
+    std::string name;
+    float score = 0.0f;
+};

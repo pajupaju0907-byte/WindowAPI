@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "../util/Types.h"
+#include <string>
 
 // 키보드/마우스 입력 상태를 관리하는 싱글톤.
 // 마우스 왼쪽/오른쪽 버튼도 가상 키 코드(VK_LBUTTON 등)가 0~255 범위 안이라 키보드와 같은
@@ -22,6 +23,13 @@ public:
     // 현재 마우스 커서 위치(창 클라이언트 영역 기준 좌표, 화면 좌표계와 동일)
     Vector2 GetMousePosition() const;
 
+    // WindowManager가 WM_CHAR로 받은 문자 하나를 전달할 때 호출한다. 영문/숫자만 버퍼에 쌓는다.
+    void OnChar(wchar_t ch);
+
+    // 이번 프레임까지 쌓인 입력 문자를 반환하고 버퍼는 비운다. 매 프레임 Update()가 아니라
+    // 이 함수가 호출될 때 비워야, 소비하는 쪽(UI)이 실제로 읽기 전에 유실되지 않는다.
+    std::wstring ConsumeTypedChars();
+
 private:
     InputManager() = default;
     ~InputManager() = default;
@@ -34,4 +42,5 @@ private:
     bool m_previousKeys[KEY_COUNT] = {};
 
     Vector2 m_mousePosition;
+    std::wstring m_typedChars;
 };

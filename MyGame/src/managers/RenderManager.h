@@ -4,8 +4,8 @@
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wrl/client.h>
-
-
+#include <string>
+#include <vector>
 // 화면에 실제로 그리는 역할만 담당하는 싱글톤.
 // 다른 매니저의 상태를 읽기만 하며, 게임 로직을 갖지 않는다.
 class RenderManager
@@ -33,9 +33,19 @@ public:
 	/// @brief 좌상단에 현재 FPS를 텍스트로 표시한다 (디버그용). 다른 내용 위에 덮이지 않도록 항상 맨 마지막에 그려야 한다.
 	/// @param renderTarget WM_PAINT에서 얻은 Direct2D 렌더타겟
 	void DrawFps(ID2D1RenderTarget* renderTarget);
+	/// @brief [임시 디버그] 현재 탑 높이(m)와 CloudManager가 들고 있는 구름 개수를 좌상단에 표시한다.
+	///        구름이 안 보일 때 "애초에 안 만들어졌는지"와 "만들어졌는데 안 그려지는지"를 구분하기 위한 용도.
+	/// @param renderTarget WM_PAINT에서 얻은 Direct2D 렌더타겟
+	void DrawCloudDebugText(ID2D1RenderTarget* renderTarget, float heightMeters, int cloudCount);
 	void DrawHeightRecord(ID2D1RenderTarget* renderTarget, float heightMeters);
-	void DrawScorePanel(ID2D1RenderTarget* renderTarget, Vector2 center, float heightMeters);\
-
+	void DrawScorePanel(ID2D1RenderTarget* renderTarget, Vector2 center, float heightMeters); \
+	void DrawNicknameInputPanel(ID2D1RenderTarget* renderTarget, Vector2 center, Vector2 panelSize, const std::wstring& currentInput);
+	/// @brief 랭킹 목록을 Ranking.png 위 NAME/SCORE 빈 칸 각각에 겹쳐 그린다. nameCellCenters/scoreCellCenters는
+	/// 화면 좌표로 이미 변환된 각 줄의 칸 중심(TitleScene::GetRankingCellCenter로 계산)이고, rankings[i]가
+	/// 그 i번째 칸에 대응한다 — 세 벡터 중 가장 짧은 길이만큼만 그린다.
+	void DrawRankingList(ID2D1RenderTarget* renderTarget, const std::vector<RankingEntry>& rankings,
+		const std::vector<Vector2>& nameCellCenters, const std::vector<Vector2>& scoreCellCenters,
+		Vector2 nameCellSize, Vector2 scoreCellSize);
 	/// @brief 모든 블럭의 칸(cell)마다 실제 충돌 판정에 쓰이는 회전된 사각형(콜라이더)을 빨간 테두리로 그린다 (디버그용).
 	/// @param renderTarget WM_PAINT에서 얻은 Direct2D 렌더타겟
 	void DrawBlockColliders(ID2D1RenderTarget* renderTarget);

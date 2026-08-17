@@ -4,6 +4,7 @@
 #include "../objects/Block.h"
 #include "../managers/BlockManager.h"
 #include "../managers/CollisionManager.h"
+#include "../managers/SoundManager.h"
 #include <algorithm>
 #include <cmath>
 
@@ -70,6 +71,7 @@ void PhysicsManager::Step(float deltaTime)
     // (PhysicsManager.h) 주석 참고. 반복 안에서 매번 뒤집으면 뒤쪽 반복의 작은 편향이 앞쪽 반복의 큰
     // 편향을 다 못 지운다.
     m_swapContactOrderThisStep = !m_swapContactOrderThisStep;
+    m_collisionSfxPlayedThisStep = false;
     for (int iteration = 0; iteration < Constants::COLLISION_SOLVER_ITERATIONS; ++iteration)
     {
         for (Block* block : BlockManager::GetInstance().GetAllBlocks())
@@ -231,6 +233,18 @@ void PhysicsManager::ResolveBlockPairCollision(Block* block, Block* other, bool 
     {
         block->WakeUp();
         blockMovable = true; // 이제 block도 움직일 수 있게 되었으므로 true로 바꿔줌
+    }
+
+    // [붕괴 충돌음] 둘 중 하나가 무게중심이 무너져 회전+낙하 이탈 중인 상태(Toppling)이고, 그 블록이
+    // 실제로 빠르게 부딪히는 중일 때만 재생한다 — 가만히 얹혀있거나 미세하게 떠는 접촉은 blockIsRealImpact/
+    // otherIsRealImpact가 false라 자동으로 걸러진다. m_collisionSfxPlayedThisStep으로 한 스텝(4회 반복 x
+    // 여러 쌍)에 최대 한 번만 울리게 제한한다.
+    bool blockIsTopplingImpact = block->GetPhysicsState() == PhysicsState::Toppling && blockIsRealImpact;
+    bool otherIsTopplingImpact = other->GetPhysicsState() == PhysicsState::Toppling && otherIsRealImpact;
+    if (!m_collisionSfxPlayedThisStep && (blockIsTopplingImpact || otherIsTopplingImpact))
+    {
+        SoundManager::GetInstance().PlaySfx("assets/Sound/Pong.mp3");
+        m_collisionSfxPlayedThisStep = true;
     }
 
     // [접촉 다각화] CollisionManager가 넘겨준 접촉점 2개에 대해서만 반응을 준다. 먼저 처리되는 점만

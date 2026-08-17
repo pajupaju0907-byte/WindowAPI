@@ -11,6 +11,7 @@
 #include "src/core/SceneManager.h"
 #include <cstdlib>
 #include <ctime>
+#include "src/managers/RankingManager.h"
 
 // 창 생성/메시지 루프는 WindowManager(싱글톤)가 전담한다.
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -34,6 +35,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         CoUninitialize();
         return FALSE;
     }
+    RankingManager::GetInstance().Init("https://wobble-block-default-rtdb.firebaseio.com/");
+
     SceneManager::GetInstance().ChangeScene(SceneType::Title);
     InvalidateRect(WindowManager::GetInstance().GetWindowHandle(), nullptr, FALSE);
 

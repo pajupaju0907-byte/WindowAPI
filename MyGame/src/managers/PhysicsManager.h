@@ -155,6 +155,12 @@ private:
     // 비슷한 "이번 프레임 전체 편향"과 "다음 프레임 전체 편향"이 반대 부호로 맞물려서 훨씬 깨끗하게 상쇄된다.
     bool m_swapContactOrderThisStep = false;
 
+    // [붕괴 충돌음] 이번 물리 스텝(Step)에서 이미 붕괴 충돌음을 재생했는지. ResolveBlockCollisions가
+    // 한 스텝 안에서 4번(COLLISION_SOLVER_ITERATIONS) 반복 호출되고 부딪히는 쌍도 여러 개일 수 있어서,
+    // 이 플래그 없이 조건이 맞을 때마다 바로 재생하면 붕괴 한 번에 소리가 수십 번 겹쳐 울린다.
+    // Step() 맨 앞에서 매번 false로 리셋된다.
+    bool m_collisionSfxPlayedThisStep = false;
+
     // [연쇄 붕괴] base 위에 (직접 또는 다른 블럭을 거쳐 간접적으로) 얹힌 모든 블럭을 재귀로 훑어서,
     // base를 포함한 전체의 질량 합과 무게중심(x) 가중합을 누적한다. ResolveBalance가 "이 블럭 자신"이 아니라
     // "이 블럭이 떠받치고 있는 전체 무더기"의 무게중심으로 판정하게 하려고 필요하다 —

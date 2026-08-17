@@ -9,7 +9,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <memory>
-
+#include <string>
 // 렌더링은 Direct2D(+ 텍스트용 DirectWrite, 이미지 디코딩용 WIC)를 쓴다.
 // ComPtr(<wrl/client.h>)로 COM 객체 소유권을 RAII로 관리해서 Release()를 직접 호출하지 않게 한다.
 #include <d2d1.h>

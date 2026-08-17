@@ -2,6 +2,7 @@
 
 #include "InputManager.h"
 #include "WindowManager.h"
+#include <cwctype>
 
 InputManager& InputManager::GetInstance()
 {
@@ -46,4 +47,19 @@ bool InputManager::IsKeyPressed(int key) const
         return false;
     }
     return m_currentKeys[key] && !m_previousKeys[key];
+}
+void InputManager::OnChar(wchar_t ch)
+{
+    bool isAsciiAlnum = (ch >= L'0' && ch <= L'9') || (ch >= L'A' && ch <= L'Z') || (ch >= L'a' && ch <= L'z');
+    if (isAsciiAlnum)
+    {
+        m_typedChars += ch;
+    }
+}
+
+std::wstring InputManager::ConsumeTypedChars()
+{
+    std::wstring typed = std::move(m_typedChars);
+    m_typedChars.clear();
+    return typed;
 }

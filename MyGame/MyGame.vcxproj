@@ -175,6 +175,9 @@
     <ClInclude Include="src\managers\CameraManager.h" />
     <ClInclude Include="src\managers\ResourceManager.h" />
     <ClInclude Include="src\managers\SoundManager.h" />
+    <ClInclude Include="src\managers\PlayerManager.h" />
+    <ClInclude Include="src\managers\RankingManager.h" />
+    <ClInclude Include="src\managers\CloudManager.h" />
     <ClInclude Include="src\managers\RenderManager.h" />
     <ClInclude Include="src\managers\UIManager.h" />
     <ClInclude Include="src\collision\Collider.h" />
@@ -213,6 +216,9 @@
     <ClCompile Include="src\managers\CameraManager.cpp" />
     <ClCompile Include="src\managers\ResourceManager.cpp" />
     <ClCompile Include="src\managers\SoundManager.cpp" />
+    <ClCompile Include="src\managers\PlayerManager.cpp" />
+    <ClCompile Include="src\managers\RankingManager.cpp" />
+    <ClCompile Include="src\managers\CloudManager.cpp" />
     <ClCompile Include="src\managers\RenderManager.cpp" />
     <ClCompile Include="src\managers\UIManager.cpp" />
     <ClCompile Include="src\collision\OBBCollider.cpp" />

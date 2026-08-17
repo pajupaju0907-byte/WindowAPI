@@ -11,6 +11,7 @@
 #include "../util/Constants.h"
 #include "../core/InputManager.h"
 #include "CameraManager.h"
+#include "SoundManager.h"
 BlockManager& BlockManager::GetInstance()
 {
     static BlockManager instance;
@@ -147,6 +148,7 @@ void BlockManager::LockBlock(Block* block)
     if (block == nullptr) return;
 
     block->Land();
+    SoundManager::GetInstance().PlaySfx("assets/Sound/Pong.mp3");
 }
 
 bool BlockManager::IsGameOver() const

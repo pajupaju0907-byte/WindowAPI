@@ -6,6 +6,7 @@
 #include "../managers/CameraManager.h"
 #include "../managers/BlockManager.h"
 #include "../managers/SoundManager.h"
+#include "../managers/CloudManager.h"
 #include "../objects/Block.h"
 #include "../util/Constants.h"
 #include "../util/Types.h"
@@ -17,8 +18,12 @@ void PlayScene::Enter()
 {
 	BlockManager::GetInstance().Reset();
 	CameraManager::GetInstance().ResetCamera();
+	CloudManager::GetInstance().Reset();
 
     ResourceManager::GetInstance().LoadSprite("assets/BlockT.png");
+    ResourceManager::GetInstance().LoadSprite("assets/cloud1.png");
+    ResourceManager::GetInstance().LoadSprite("assets/cloud2.png");
+    ResourceManager::GetInstance().LoadSprite("assets/cloud3.png");
     ResourceManager::GetInstance().LoadSprite("assets/background.png");
     ResourceManager::GetInstance().LoadSprite("assets/topleft.png");
     ResourceManager::GetInstance().LoadSprite("assets/topcenter.png");
@@ -71,6 +76,8 @@ void PlayScene::Update(float deltaTime)
     {
         m_bestHeightMeters = currentHeightMeters;
     }
+
+    CloudManager::GetInstance().Update(deltaTime, currentHeightMeters);
 }
 
 void PlayScene::RenderBackground(ID2D1RenderTarget* renderTarget)
@@ -252,6 +259,19 @@ void PlayScene::RenderNextBlockPreview(ID2D1RenderTarget* renderTarget)
     }
 }
 
+void PlayScene::RenderClouds(ID2D1RenderTarget* renderTarget)
+{
+    // 구름은 카메라를 따라 스크롤되는 월드 좌표(position.y)로 저장돼 있으므로 WorldToScreen으로 변환한다.
+    // x는 CameraManager가 가로로는 움직이지 않아(m_position.x가 항상 0) 화면 좌표와 그대로 같다.
+    for (const Cloud& cloud : CloudManager::GetInstance().GetClouds())
+    {
+        const SpriteInfo& cloudSprite = ResourceManager::GetInstance().GetSpriteInfo(cloud.spriteId);
+        Vector2 screenCenter = CameraManager::GetInstance().WorldToScreen(cloud.position);
+        float size = Constants::CLOUD_BASE_SIZE * cloud.scale;
+        RenderManager::GetInstance().DrawSpriteRotated(renderTarget, cloudSprite, screenCenter, { size, size }, 0.0f, 0, Constants::CLOUD_OPACITY);
+    }
+}
+
 D2D1_RECT_F PlayScene::GetBlockColorSourceRect(int slotIndex) const
 {
     float left = Constants::BLOCK_COLOR_SHEET_CONTENT_LEFT + Constants::BLOCK_COLOR_SHEET_SLOT_WIDTH * static_cast<float>(slotIndex);
@@ -277,6 +297,8 @@ void PlayScene::Render(ID2D1RenderTarget* renderTarget)
         }
     }
 
+    RenderClouds(renderTarget);
+
     RenderManager::GetInstance().DrawHeightRecord(renderTarget, m_bestHeightMeters);
     RenderNextBlockPreview(renderTarget);
 
@@ -286,5 +308,6 @@ void PlayScene::Render(ID2D1RenderTarget* renderTarget)
         RenderManager::GetInstance().DrawSupportDebug(renderTarget);
         RenderManager::GetInstance().DrawPhysicsDebugText(renderTarget);
         RenderManager::GetInstance().DrawCenterOfMass(renderTarget);
+        RenderManager::GetInstance().DrawCloudDebugText(renderTarget, BlockManager::GetInstance().GetTallestHeightMeters(), static_cast<int>(CloudManager::GetInstance().GetClouds().size()));
     }
 }

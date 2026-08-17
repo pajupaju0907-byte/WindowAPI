@@ -2,6 +2,9 @@
 
 #include "../core/Scene.h"
 #include "../util/Types.h"
+#include <string>
+#include <vector>
+#include "../util/Types.h"
 
 // 타이틀 화면 씬
 class TitleScene : public Scene
@@ -42,6 +45,12 @@ private:
     Vector2 GetRankingCloseButtonCenter() const;
     Vector2 GetRankingCloseButtonSize() const;
 
+    // Ranking.png 원본 픽셀 좌표(cellSourceRect)를, 지금 화면에 그려진 랭킹 패널 위의 실제 화면
+    // 좌표로 변환한다. GetRankingCloseButtonCenter/Size와 같은 계산이라 그 두 칸(NAME/SCORE) 뿐
+    // 아니라 임의의 칸에 재사용할 수 있게 일반화한 버전.
+    Vector2 GetRankingCellCenter(const D2D1_RECT_F& cellSourceRect) const;
+    Vector2 GetRankingCellSize(const D2D1_RECT_F& cellSourceRect) const;
+
     // [옵션 패널] 스피커+볼륨 바 그룹의 원점(그룹의 왼쪽 끝, 바들의 공통 바닥선) 화면 좌표.
     // soundbar.png 원본 픽셀 좌표를 이 원점 기준 상대 위치로 옮겨서 그리기 때문에, 그룹 안 배치
     // 비율은 그대로 유지된다.
@@ -72,6 +81,8 @@ private:
     bool m_showOptionPanel = false;
     bool m_showRankingPanel = false;
 
+    bool m_showNicknamePanel = false;
+    std::wstring m_nicknameInput;
     // [연출] 제목 낙하+통통 튕기는 연출용 상태. Enter()에서 화면 위(TITLE_DROP_START_OFFSET_Y)로
     // 초기화되고, Update()에서 중력처럼 가속하며 떨어지다가 제자리(오프셋 0)에 닿으면 튕겨 올랐다
     // 잦아들며 멈춘다. Render()가 TITLE_IMAGE_CENTER_Y에 이 오프셋을 더해서 그린다.

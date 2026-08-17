@@ -12,6 +12,8 @@
 #include "../core/WindowManager.h"
 #include "../util/Constants.h"
 #include "../util/Types.h"
+#include "../managers/PlayerManager.h"
+#include "../managers/RankingManager.h"
 
 namespace
 {
@@ -31,11 +33,40 @@ namespace
         { 42.0f, 656.0f, 766.0f, 905.0f },
         { 771.0f, 656.0f, 1492.0f, 905.0f },
     };
+    constexpr size_t NICKNAME_MAX_LENGTH = 12;
     // Ranking.png(1024x1536)는 캔버스 전체가 아니라 가운데의 순위표 팝업 모양만 그림이고 나머지는
 // 투명 배경이다 — 알파 채널을 픽셀 단위로 스캔해 실제 그림이 있는 영역만 오려 쓴다.
     constexpr D2D1_RECT_F RANKING_PANEL_SOURCE_RECT = { 23.0f, 48.0f, 999.0f, 1450.0f };
     // Ranking.png 안에서 팝업 닫기(X) 버튼이 차지하는 실제 그림 영역
     constexpr D2D1_RECT_F RANKING_CLOSE_BUTTON_SOURCE_RECT = { 871.0f, 106.0f, 964.0f, 200.0f };
+
+    // Ranking.png는 순위 1~10이 이미 그림으로 박혀 있고, NAME/SCORE 칸만 빈 상자로 비어있다.
+    // 그 10개 빈 상자의 실제 그림 영역을 픽셀 단위로 스캔해 측정한 값 — 우리는 이 칸 안에
+    // 닉네임/점수 텍스트만 겹쳐 그리면 된다(칸 자체나 순위 숫자는 그림이 이미 갖고 있음).
+    constexpr D2D1_RECT_F RANKING_NAME_CELL_SOURCE_RECTS[10] = {
+        { 255.0f, 363.0f, 687.0f, 442.0f },
+        { 255.0f, 466.0f, 687.0f, 547.0f },
+        { 255.0f, 570.0f, 687.0f, 651.0f },
+        { 255.0f, 675.0f, 687.0f, 756.0f },
+        { 255.0f, 779.0f, 687.0f, 860.0f },
+        { 255.0f, 884.0f, 687.0f, 965.0f },
+        { 255.0f, 989.0f, 687.0f, 1069.0f },
+        { 255.0f, 1093.0f, 687.0f, 1175.0f },
+        { 255.0f, 1198.0f, 687.0f, 1279.0f },
+        { 255.0f, 1301.0f, 687.0f, 1382.0f },
+    };
+    constexpr D2D1_RECT_F RANKING_SCORE_CELL_SOURCE_RECTS[10] = {
+        { 708.0f, 363.0f, 939.0f, 442.0f },
+        { 708.0f, 466.0f, 939.0f, 547.0f },
+        { 708.0f, 570.0f, 939.0f, 651.0f },
+        { 708.0f, 675.0f, 939.0f, 756.0f },
+        { 708.0f, 779.0f, 939.0f, 860.0f },
+        { 708.0f, 884.0f, 939.0f, 965.0f },
+        { 708.0f, 989.0f, 939.0f, 1069.0f },
+        { 708.0f, 1093.0f, 939.0f, 1175.0f },
+        { 708.0f, 1198.0f, 939.0f, 1279.0f },
+        { 708.0f, 1301.0f, 939.0f, 1382.0f },
+    };
 
     // Pop.png(1536x1024)는 캔버스 전체가 아니라 가운데의 둥근 팝업창 모양만 그림이고 나머지는
     // 투명 배경이다 — 알파 채널을 픽셀 단위로 스캔해 실제 그림이 있는 영역만 오려 쓴다.
@@ -260,6 +291,32 @@ Vector2 TitleScene::GetRankingCloseButtonSize() const
     return { (RANKING_CLOSE_BUTTON_SOURCE_RECT.right - RANKING_CLOSE_BUTTON_SOURCE_RECT.left) * scale,
         (RANKING_CLOSE_BUTTON_SOURCE_RECT.bottom - RANKING_CLOSE_BUTTON_SOURCE_RECT.top) * scale };
 }
+
+Vector2 TitleScene::GetRankingCellCenter(const D2D1_RECT_F& cellSourceRect) const
+{
+    Vector2 panelCenter = GetRankingPanelCenter();
+    Vector2 panelSize = GetRankingPanelSize();
+    Vector2 panelTopLeft = { panelCenter.x - panelSize.x / 2.0f, panelCenter.y - panelSize.y / 2.0f };
+
+    float croppedWidth = RANKING_PANEL_SOURCE_RECT.right - RANKING_PANEL_SOURCE_RECT.left;
+    float scale = panelSize.x / croppedWidth;
+
+    float offsetX = (cellSourceRect.left + cellSourceRect.right) / 2.0f - RANKING_PANEL_SOURCE_RECT.left;
+    float offsetY = (cellSourceRect.top + cellSourceRect.bottom) / 2.0f - RANKING_PANEL_SOURCE_RECT.top;
+
+    return { panelTopLeft.x + offsetX * scale, panelTopLeft.y + offsetY * scale };
+}
+
+Vector2 TitleScene::GetRankingCellSize(const D2D1_RECT_F& cellSourceRect) const
+{
+    Vector2 panelSize = GetRankingPanelSize();
+    float croppedWidth = RANKING_PANEL_SOURCE_RECT.right - RANKING_PANEL_SOURCE_RECT.left;
+    float scale = panelSize.x / croppedWidth;
+
+    return { (cellSourceRect.right - cellSourceRect.left) * scale,
+        (cellSourceRect.bottom - cellSourceRect.top) * scale };
+}
+
 void TitleScene::Update(float deltaTime)
 {
     // [연출] 제목이 위에서 떨어지다가 제자리(오프셋 0)에 닿으면 튕겨 올랐다 잦아들며 멈춘다.
@@ -291,17 +348,22 @@ void TitleScene::Update(float deltaTime)
     // 패널을 여는 판정은 항상 체크하되, 다른 패널이 이미 열려있으면 새로 열 수 없게 막는다
     // (그래야 Option/Ranking이 동시에 열려서 겹쳐 그려지는 일이 없다)
     bool isMouseOverOption = IsPointInRect(mousePos, GetButtonHitboxCenter(BUTTON_SLOT_OPTION), GetButtonHitboxSize());
-    if (isMouseOverOption && isLeftClick && !m_showRankingPanel)
+    if (isMouseOverOption && isLeftClick && !m_showRankingPanel&& !m_showNicknamePanel)
     {
+        SoundManager::GetInstance().PlaySfx("assets/Sound/Bbong.mp3");
         m_showOptionPanel = !m_showOptionPanel;
     }
 
     bool isMouseOverRanking = IsPointInRect(mousePos, GetButtonHitboxCenter(BUTTON_SLOT_RANKING), GetButtonHitboxSize());
-    if (isMouseOverRanking && isLeftClick && !m_showOptionPanel)
+    if (isMouseOverRanking && isLeftClick && !m_showOptionPanel && !m_showNicknamePanel)
     {
+        SoundManager::GetInstance().PlaySfx("assets/Sound/Bbong.mp3");
         m_showRankingPanel = !m_showRankingPanel;
+        if (m_showRankingPanel)
+        {
+            RankingManager::GetInstance().RequestRankings();
+        }
     }
-
     if (m_showOptionPanel)
     {
         // 패널이 떠 있는 동안은 모달처럼 동작 — 뒤의 Start/Exit는 판정하지 않고 볼륨 바만 본다
@@ -309,6 +371,7 @@ void TitleScene::Update(float deltaTime)
         {
             if (IsPointInRect(mousePos, GetPopupCloseButtonCenter(), GetPopupCloseButtonSize()))
             {
+                SoundManager::GetInstance().PlaySfx("assets/Sound/Bbong.mp3");
                 m_showOptionPanel = false;
             }
             else
@@ -329,7 +392,28 @@ void TitleScene::Update(float deltaTime)
         // Ranking도 마찬가지로 모달처럼 동작 — X 닫기만 판정한다
         if (isLeftClick && IsPointInRect(mousePos, GetRankingCloseButtonCenter(), GetRankingCloseButtonSize()))
         {
+            SoundManager::GetInstance().PlaySfx("assets/Sound/Bbong.mp3");
             m_showRankingPanel = false;
+        }
+    }
+    else if (m_showNicknamePanel)
+    {
+        m_nicknameInput += InputManager::GetInstance().ConsumeTypedChars();
+        if (m_nicknameInput.length() > NICKNAME_MAX_LENGTH)
+        {
+            m_nicknameInput.resize(NICKNAME_MAX_LENGTH);
+        }
+
+        if (InputManager::GetInstance().IsKeyPressed(VK_BACK) && !m_nicknameInput.empty())
+        {
+            m_nicknameInput.pop_back();
+        }
+
+        if (InputManager::GetInstance().IsKeyPressed(VK_RETURN) && !m_nicknameInput.empty())
+        {
+            PlayerManager::GetInstance().SetNickname(std::string(m_nicknameInput.begin(), m_nicknameInput.end()));
+            m_showNicknamePanel = false;
+            SceneManager::GetInstance().ChangeScene(SceneType::Play);
         }
     }
     else
@@ -337,12 +421,22 @@ void TitleScene::Update(float deltaTime)
         bool isMouseOverStart = IsPointInRect(mousePos, GetButtonHitboxCenter(BUTTON_SLOT_START), GetButtonHitboxSize());
         if (isMouseOverStart && isLeftClick)
         {
-            SceneManager::GetInstance().ChangeScene(SceneType::Play);
+            SoundManager::GetInstance().PlaySfx("assets/Sound/Bbong.mp3");
+            if (PlayerManager::GetInstance().HasNickname())
+            {
+                SceneManager::GetInstance().ChangeScene(SceneType::Play);
+            }
+            else
+            {
+                m_nicknameInput.clear();
+                m_showNicknamePanel = true;
+            }
         }
 
         bool isMouseOverExit = IsPointInRect(mousePos, GetButtonHitboxCenter(BUTTON_SLOT_EXIT), GetButtonHitboxSize());
         if (isMouseOverExit && isLeftClick)
         {
+            SoundManager::GetInstance().PlaySfx("assets/Sound/Bbong.mp3");
             // WM_DESTROY -> PostQuitMessage로 이어지도록, DefWindowProc이 처리하는 정상 종료 경로(WM_CLOSE)를 태운다
             PostMessage(WindowManager::GetInstance().GetWindowHandle(), WM_CLOSE, 0, 0);
         }
@@ -431,9 +525,35 @@ void TitleScene::Render(ID2D1RenderTarget* renderTarget)
         {
             RenderManager::GetInstance().DrawSpriteRotated(renderTarget, rankingSprite, GetRankingPanelCenter(), GetRankingPanelSize(),
                 0.0f, 0, 1.0f, &RANKING_PANEL_SOURCE_RECT);
+
+            // Ranking.png의 10개 NAME/SCORE 빈 칸 각각의 원본 좌표(RANKING_NAME/SCORE_CELL_SOURCE_RECTS)를
+            // 지금 화면에 그려진 패널 기준 실제 좌표로 하나씩 변환해서 넘긴다
+            std::vector<Vector2> nameCellCenters;
+            std::vector<Vector2> scoreCellCenters;
+            for (const D2D1_RECT_F& cellRect : RANKING_NAME_CELL_SOURCE_RECTS)
+            {
+                nameCellCenters.push_back(GetRankingCellCenter(cellRect));
+            }
+            for (const D2D1_RECT_F& cellRect : RANKING_SCORE_CELL_SOURCE_RECTS)
+            {
+                scoreCellCenters.push_back(GetRankingCellCenter(cellRect));
+            }
+
+            RenderManager::GetInstance().DrawRankingList(renderTarget, RankingManager::GetInstance().GetCachedRankings(),
+                nameCellCenters, scoreCellCenters,
+                GetRankingCellSize(RANKING_NAME_CELL_SOURCE_RECTS[0]), GetRankingCellSize(RANKING_SCORE_CELL_SOURCE_RECTS[0]));
         }
     }
+    if (m_showNicknamePanel)
+    {
+        // Pop.png 팝업 대신 창 전체를 검은 화면으로 덮는다 — 좁은 팝업 폭에 안 맞춰도 되니
+        // 글자 크기를 줄이거나 줄바꿈에 신경 쓸 필요가 없다
+        Vector2 screenCenter = { Constants::WINDOW_WIDTH / 2.0f, Constants::WINDOW_HEIGHT / 2.0f };
+        Vector2 screenSize = { static_cast<float>(Constants::WINDOW_WIDTH), static_cast<float>(Constants::WINDOW_HEIGHT) };
+        RenderManager::GetInstance().FillRect(renderTarget, screenCenter, screenSize, Constants::HEIGHT_RECORD_BACKGROUND_COLOR, 1.0f);
 
+        RenderManager::GetInstance().DrawNicknameInputPanel(renderTarget, screenCenter, screenSize, m_nicknameInput);
+    }
     if (m_showDebug)
     {
         RenderManager::GetInstance().DrawDebugRect(renderTarget, GetButtonHitboxCenter(BUTTON_SLOT_START), GetButtonHitboxSize(), Constants::COLLIDER_DEBUG_COLOR);

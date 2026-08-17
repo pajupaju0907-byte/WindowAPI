@@ -105,6 +105,15 @@
     <ClInclude Include="src\managers\SoundManager.h">
       <Filter>src\managers</Filter>
     </ClInclude>
+    <ClInclude Include="src\managers\PlayerManager.h">
+      <Filter>src\managers</Filter>
+    </ClInclude>
+    <ClInclude Include="src\managers\RankingManager.h">
+      <Filter>src\managers</Filter>
+    </ClInclude>
+    <ClInclude Include="src\managers\CloudManager.h">
+      <Filter>src\managers</Filter>
+    </ClInclude>
     <ClInclude Include="src\managers\RenderManager.h">
       <Filter>src\managers</Filter>
     </ClInclude>
@@ -192,6 +201,15 @@
       <Filter>src\managers</Filter>
     </ClCompile>
     <ClCompile Include="src\managers\SoundManager.cpp">
+      <Filter>src\managers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\managers\PlayerManager.cpp">
+      <Filter>src\managers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\managers\RankingManager.cpp">
+      <Filter>src\managers</Filter>
+    </ClCompile>
+    <ClCompile Include="src\managers\CloudManager.cpp">
       <Filter>src\managers</Filter>
     </ClCompile>
     <ClCompile Include="src\managers\RenderManager.cpp">

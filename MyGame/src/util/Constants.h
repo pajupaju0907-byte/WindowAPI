@@ -255,6 +255,24 @@ namespace Constants
 	constexpr float GAME_OVER_SCORE_CENTER_Y = WINDOW_HEIGHT * 0.5f;
 	constexpr float GAME_OVER_BUTTON_CENTER_Y = WINDOW_HEIGHT * 0.62f;
 
+	// [신기록 팝업] 게임오버 화면에서 개인 최고기록을 갱신했을 때 잠깐 떴다 사라지는 연출
+	constexpr float NEW_RECORD_POPUP_CENTER_Y = WINDOW_HEIGHT * 0.4f;
+	constexpr float NEW_RECORD_TEXT_TARGET_WIDTH = TILE_SIZE * 10.0f;
+	constexpr float NEW_RECORD_POPUP_DURATION = 3.5f; // 전체 표시 시간(초)
+	constexpr float NEW_RECORD_FADE_DURATION = 0.6f;  // 끝나기 직전 서서히 사라지는 데 걸리는 시간(초)
+	// 텍스트가 NEW_RECORD_SPRING_START_SCALE 크기에서 튀어나오듯 커지다 1.0에 자리잡는 스프링 물리 계수.
+	// 감쇠(DAMPING)가 강성(STIFFNESS)에 비해 약할수록 살짝 커졌다 줄어드는 오버슈트가 커진다.
+	constexpr float NEW_RECORD_SPRING_START_SCALE = 0.6f;
+	constexpr float NEW_RECORD_SPRING_STIFFNESS = 55.0f;
+	constexpr float NEW_RECORD_SPRING_DAMPING = 6.0f;
+
+	constexpr int NEW_RECORD_PARTICLE_COUNT = 20;
+	constexpr float NEW_RECORD_PARTICLE_MIN_SPEED = 200.0f;
+	constexpr float NEW_RECORD_PARTICLE_MAX_SPEED = 480.0f;
+	constexpr float NEW_RECORD_PARTICLE_GRAVITY = 700.0f;
+	constexpr float NEW_RECORD_PARTICLE_SCALE = 0.22f; // 원본 파티클 조각이 커서 이만큼 축소해서 그린다
+	constexpr float NEW_RECORD_PARTICLE_MAX_ANGULAR_SPEED = 360.0f; // 도/초
+
 	// [타이틀 화면] 시작 버튼 중심의 세로 위치(화면 좌표, px). 가로는 항상 창 가운데(WINDOW_WIDTH/2)로 고정.
 	// Option/Ranking(비활성)은 이 값 기준으로 버튼 한 칸 높이씩 아래로 이어 붙는다(GetOptionButtonCenter 등 참고)
 	constexpr float TITLE_BUTTON_CENTER_Y = WINDOW_HEIGHT * 0.55f;
@@ -315,6 +333,10 @@ namespace Constants
 	// 배경판 위아래로 글자 크기 기준으로 남길 여백(px)
 	constexpr float HEIGHT_RECORD_PANEL_PADDING = 16.0f;
 
+	// [랭킹 패널] Ranking.png 안 크림색 칸 위에 쓰는 글씨라, 흰색(HEIGHT_RECORD_TEXT_COLOR)이 아니라
+	// 어두운 갈색이어야 눈에 보인다
+	constexpr COLORREF RANKING_TEXT_COLOR = RGB(90, 60, 20);
+
 	// [다음 블럭 미리보기] 화면 오른쪽 위 모서리에 Next.png(정사각형 판넬) 배경을 고정 표시하고,
 	// 그 위에 다음에 나올 테트로미노를 축소해서 그린다.
 	constexpr float NEXT_PANEL_TARGET_WIDTH = TILE_SIZE * 3.0f;
@@ -356,4 +378,24 @@ namespace Constants
 	// [스피커+볼륨 바 그룹] soundbar.png 안에서 스피커 아이콘과 바 5개가 이루는 배치(크기/간격 비율)를
 	// 그대로 유지한 채, 그룹 전체를 이 배율 하나로만 줄이거나 키운다.
 	constexpr float SOUND_BAR_GROUP_SCALE = 0.27f;
+
+	// [구름 방해 요소] 탑이 일정 높이 이상 쌓였을 때 화면을 가로지르며 시야를 방해하는 구름
+	// [의도적 설계] 초반엔 방해 없이 쌓게 하고, 후반부(고득점 구간)에만 구름으로 방해하는 게 목적.
+	// 20m는 실제로 체감해보니 너무 높아서(2026-08-17) 10m로 낮춤 — MAX_CHANCE도 MIN_HEIGHT의 3배
+	// 비율을 그대로 유지해서(원래 20:60) 확률이 오르는 구간의 "느낌"은 바뀌지 않게 함
+	constexpr float CLOUD_MIN_HEIGHT_METERS = 10.0f;      // 이 높이 이상부터 구름이 스폰되기 시작
+	constexpr float CLOUD_HEIGHT_FOR_MAX_CHANCE = 30.0f;  // 이 높이에서 스폰 확률이 최대치에 도달
+	constexpr float CLOUD_SPAWN_CHECK_INTERVAL = 2.0f;    // 몇 초마다 한 번씩 스폰을 시도할지
+	constexpr float CLOUD_BASE_SPAWN_CHANCE = 0.3f;       // MIN_HEIGHT에 막 도달했을 때의 스폰 확률
+	constexpr float CLOUD_MAX_SPAWN_CHANCE = 0.85f;       // HEIGHT_FOR_MAX_CHANCE 이상일 때의 스폰 확률
+	constexpr int CLOUD_MAX_COUNT = 6;                    // 동시에 존재할 수 있는 최대 구름 개수
+
+	constexpr float CLOUD_MIN_SCALE = 0.6f;               // 랜덤 크기 배율 최소
+	constexpr float CLOUD_MAX_SCALE = 1.6f;               // 랜덤 크기 배율 최대
+	constexpr float CLOUD_BASE_SIZE = TILE_SIZE * 3.5f;   // 배율 1.0 기준 구름의 가로/세로 크기(px)
+
+	constexpr float CLOUD_MIN_SPEED = 40.0f;              // 랜덤 이동 속도 최소(px/s)
+	constexpr float CLOUD_MAX_SPEED = 120.0f;             // 랜덤 이동 속도 최대(px/s)
+
+	constexpr float CLOUD_OPACITY = 0.7f;                 // 반투명 알파값(1.0에 가까울수록 덜 투명)
 }

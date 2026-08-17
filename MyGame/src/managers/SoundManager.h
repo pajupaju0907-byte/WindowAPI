@@ -19,6 +19,10 @@ public:
     void SetVolume(float volume);
     float GetVolume() const;
 
+    // 짧은 효과음(버튼 클릭, 블럭 착지, 게임오버 등)을 1회 재생한다. PlayBgm과 달리 여러 개가
+    // 겹쳐 재생될 수 있어 내부적으로 여러 채널을 돌려쓴다.
+    void PlaySfx(const std::string& path);
+
     // 프로그램 종료 시 MCI 장치를 정리한다.
     void Shutdown();
 
@@ -33,4 +37,7 @@ private:
 
     bool m_isPlaying = false;
     float m_volume = 1.0f;
+
+    // [효과음 채널] PlaySfx가 다음에 쓸 채널 번호(0~SFX_CHANNEL_COUNT-1)를 돌아가며 가리킨다
+    int m_nextSfxChannel = 0;
 };

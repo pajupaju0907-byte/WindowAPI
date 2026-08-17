@@ -29,6 +29,10 @@ private:
     // 카메라 변환과 무관한 화면 고정 HUD라 DrawHeightRecord처럼 그린다.
     void RenderNextBlockPreview(ID2D1RenderTarget* renderTarget);
 
+    // CloudManager가 들고 있는 구름들을 반투명(CLOUD_OPACITY)하게 그린다. 블럭 위에 겹쳐 그려야
+    // "시야를 방해한다"는 목적에 맞으므로 블럭을 그린 다음, HUD보다는 먼저 호출한다.
+    void RenderClouds(ID2D1RenderTarget* renderTarget);
+
     // Block.png(색깔별 정사각형이 가로로 이어진 시트)에서 slotIndex번째 칸만 잘라 쓸 소스 사각형(원본 픽셀 좌표)
     D2D1_RECT_F GetBlockColorSourceRect(int slotIndex) const;
 
