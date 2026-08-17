@@ -122,6 +122,16 @@ private:
     ~PhysicsManager();
     PhysicsManager(const PhysicsManager&) = delete;
     PhysicsManager& operator=(const PhysicsManager&) = delete;
+
+    // [얇은 지지 폭에서 영원히 불안정 판정되는 버그 수정] IMBALANCE_DEADZONE(고정 2px)을 지지 폭
+    // (supportMaxX-supportMinX)이 얼마든 그대로 양쪽에서 빼면, 지지 폭 자체가 2*IMBALANCE_DEADZONE보다
+    // 좁을 때(서브셀 단위로 가장자리에 살짝만 걸친 착지에서 흔함) supportMinX+DEADZONE이
+    // supportMaxX-DEADZONE보다 커져버린다 — 그러면 무게중심이 그 좁은 범위 안 어디에 있든(정중앙이어도)
+    // "왼쪽 데드존 안" 또는 "오른쪽 데드존 안" 둘 중 하나에는 항상 걸려서 절대 "균형"으로 판정될 수 없다.
+    // 데드존을 지지 폭의 절반을 넘지 않도록 clamp해서, 좁은 지지대일수록 데드존도 비례해서 줄어들게 한다.
+    // ResolveBalance/SettleToppledBlocks 둘 다 같은 기준을 써야 해서 공용 함수로 뽑았다.
+    float GetClampedImbalanceDeadzone(float supportMinX, float supportMaxX) const;
+
     // [지지 판정 통합] cellIndex번 칸의 회전된 네 꼭짓점(GetCellRotatedCorners)에서 "가장 아래 Y"와
     // "가로 범위(min~max X)"를 뽑아준다. 회전이 없으면 기존 cellBottomY/cellCenterX 계산과 똑같이 나오고,
     // 기울어진 블럭이면 실제 기운 모양대로 나온다 — IsCellSupported/CountCellsRestingOnBlock/

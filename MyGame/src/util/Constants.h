@@ -173,6 +173,15 @@ namespace Constants
 	// 물리적으로 완전히 정확한 상태는 아니어도 그 자리에서 강제로 멈춰(ForceStabilize) 무한 진동을 끊는다.
 	constexpr int MAX_CONSECUTIVE_TOPPLE_COUNT = 5;
 
+	// [트리키 타워 핵심 수정 — 충돌 반응과 분리] 실제 관성모멘트 그대로면 무게중심이 지지범위를 벗어나도
+	// 좀처럼 안 넘어져서 둔하게 느껴진다 — Block::ApplyGravityTorque(넘어지는 회전 가속도 계산)에서만
+	// 이 비율만큼 관성을 깎아서 살짝만 밀려도 시원하게 넘어가게 한다. 예전엔 이 축소를
+	// Block::GetMomentOfInertia() 자체에 넣어놨었는데, 그러면 충돌 임펄스 계산(ResolveRigidCollision/
+	// ResolveRigidCollisionWithBlock)에도 그대로 새어 들어가서, 가만히 쌓여 쉬고 있는 블럭들의 사소한
+	// 접촉까지 실제보다 5배 더 세게 회전으로 반응해버려 각속도가 SLEEP_ANGULAR_THRESHOLD를 계속 넘나들며
+	// 영원히 안 재워지는 버그가 있었다 — ApplyGravityTorque 호출부에서만 곱하는 걸로 옮겨서 고쳤다.
+	constexpr float TOPPLE_INERTIA_SCALE = 0.2f;
+
 	// 무게중심이 이 각도(도)까지 기울면 더 못 버티고 완전히 무너지는 것으로 확정한다 (Awake -> Toppling 전환).
 	// 각속도가 보조 토크에서 왔든 실제 충돌에서 왔든 상관없이, 이 각도를 넘으면 무조건 여기서 걸린다 —
 	// 그래서 무한 회전 걱정 없이 위 보조 토크를 마음 놓고 쓸 수 있다.

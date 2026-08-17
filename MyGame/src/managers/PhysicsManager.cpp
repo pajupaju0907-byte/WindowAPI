@@ -314,6 +314,14 @@ void PhysicsManager::ResolveBlockCollisions(bool swapContactOrder)
     }
 }
 
+float PhysicsManager::GetClampedImbalanceDeadzone(float supportMinX, float supportMaxX) const
+{
+    // [얇은 지지 폭 방지] 이유는 이 함수 선언부(PhysicsManager.h) 주석 참고 — 지지 폭의 절반을
+    // 넘지 않도록 clamp해서, 양쪽 데드존이 겹쳐 "균형" 판정이 아예 불가능해지는 걸 막는다.
+    float supportWidth = supportMaxX - supportMinX;
+    return (std::min)(Constants::IMBALANCE_DEADZONE, supportWidth * 0.5f);
+}
+
 void PhysicsManager::GetCellSupportBounds(Block* block, int cellIndex, float& outTopY, float& outBottomY, float& outMinX, float& outMaxX) const
 {
     Vector2 corners[4];
@@ -754,8 +762,11 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const Resting
     // IMBALANCE_DEADZONE만큼도 못 들어와 있으면(가장자리에 걸치기만 해도) 불안정으로 본다 —
     // 지지 칸이 하나뿐이고 무게중심이 그 가장자리에 정확히 걸리는 칼날 위 균형(예: S자를 세로로 세워
     // 모서리 하나로만 받치는 경우)까지 "가장자리를 안 넘었으니 안정"으로 영원히 통과하는 걸 막는다.
-    bool isImbalanced = centerOfMassX < supportMinX + Constants::IMBALANCE_DEADZONE ||
-        centerOfMassX > supportMaxX - Constants::IMBALANCE_DEADZONE;
+    // [얇은 지지 폭 방지] GetClampedImbalanceDeadzone 주석 참고 — 지지 폭이 좁으면 데드존도 줄여서,
+    // 무게중심이 정중앙이어도 절대 균형으로 판정될 수 없던 버그를 막는다.
+    float imbalanceDeadzone = GetClampedImbalanceDeadzone(supportMinX, supportMaxX);
+    bool isImbalanced = centerOfMassX < supportMinX + imbalanceDeadzone ||
+        centerOfMassX > supportMaxX - imbalanceDeadzone;
 
     if (!isImbalanced)
     {
@@ -1043,8 +1054,12 @@ void PhysicsManager::SettleToppledBlocks(const RestingChildrenMap& childrenOf)
             continue;
         }
 
-        bool isBalanced = centerOfMassX >= supportMinX + Constants::IMBALANCE_DEADZONE &&
-            centerOfMassX <= supportMaxX - Constants::IMBALANCE_DEADZONE;
+        // [얇은 지지 폭 방지] ResolveBalance와 반드시 같은 기준을 써야 한다 — GetClampedImbalanceDeadzone
+        // 주석 참고. 안 그러면 얇게 걸친 착지에서 이 함수는 "절대 안정 아님"으로, ResolveBalance는
+        // (클램프 덕분에) "안정"으로 서로 다르게 판단해 Toppling<->Awake를 오갈 수 있다.
+        float imbalanceDeadzone = GetClampedImbalanceDeadzone(supportMinX, supportMaxX);
+        bool isBalanced = centerOfMassX >= supportMinX + imbalanceDeadzone &&
+            centerOfMassX <= supportMaxX - imbalanceDeadzone;
         if (isBalanced)
         {
             // [무한 진동 버그 수정] 지금 각도(완전히 넘어가서 90/135도처럼 누운 자세일 수 있음)를 새

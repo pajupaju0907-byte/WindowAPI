@@ -264,10 +264,13 @@ float Block::GetMomentOfInertia() const
 		totalInertia += selfInertiaPerCell + cellMass * distanceSquared;
 	}
 
-	// [트리키 타워 핵심 수정]
-	// 관성 모멘트가 크면 회전하기(넘어지기) 힘듭니다.
-	// 기존 값의 20% 수준(0.2f)으로 확 낮춰서, 살짝만 밀려도 시원하게 휙휙 넘어가게 만듭니다.
-	return totalInertia * 0.2f;
+	// [충돌 반응과 분리 — 실전에서 발견된 과도한 스핀 버그 수정] "넘어지기 쉽게" 관성을 깎는 튜닝
+	// (Constants::TOPPLE_INERTIA_SCALE)은 여기가 아니라 ApplyGravityTorque 호출부에서만 곱한다.
+	// 예전엔 여기서 곧바로 0.2배 해서 돌려줬는데, 이 함수를 ResolveRigidCollision/
+	// ResolveRigidCollisionWithBlock의 충돌 임펄스 계산도 그대로 가져다 써서, 가만히 쌓여 쉬는
+	// 블럭들의 사소한 접촉까지 실제보다 5배 더 세게 회전으로 새어나가 영원히 안 재워지는 원인이 됐다.
+	// 여기서는 물리적으로 정확한(축소 안 한) 값을 그대로 돌려준다.
+	return totalInertia;
 }
 
 AABB Block::GetWorldBounds() const
@@ -550,8 +553,11 @@ void Block::ApplyGravityTorque(Vector2 pivotWorld, float deltaTime)
 	// [평행축 정리] 지금 실제로 도는 축은 무게중심이 아니라 pivot이므로, 무게중심 기준 관성모멘트
 	// (GetMomentOfInertia)에 m*거리^2를 더해 pivot 기준 관성모멘트로 바꿔줘야 한다. 이걸 빼먹으면
 	// 많이 기울어질수록(거리가 멀어질수록) 실제보다 비현실적으로 빨리 가속돼버린다.
+	// [트리키 타워 핵심 수정] "넘어지기 쉽게" 관성을 깎는 튜닝은 GetMomentOfInertia() 자체가 아니라
+	// 여기서만 TOPPLE_INERTIA_SCALE로 곱한다 — 충돌 임펄스 계산과 공유하는 값을 깎으면 안 되는
+	// 이유는 GetMomentOfInertia() 주석 참고.
 	float distanceSquared = r.x * r.x + r.y * r.y;
-	float inertiaAboutPivot = GetMomentOfInertia() + m_mass * distanceSquared;
+	float inertiaAboutPivot = GetMomentOfInertia() * Constants::TOPPLE_INERTIA_SCALE + m_mass * distanceSquared;
 
 	float angularAccelerationRad = torqueAboutPivot / inertiaAboutPivot;
 	m_angularVelocity += MathUtil::RadiansToDegrees(angularAccelerationRad) * deltaTime;
