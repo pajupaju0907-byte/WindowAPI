@@ -97,24 +97,31 @@ public:
     // rest timer가 판단한다.
     void SettleToppledBlocks(const RestingChildrenMap& childrenOf);
 
-    // 개별 블럭이 아니라 탑 전체가 안정적인지 판단 (전체 판단은 매니저의 책임)
-    bool CheckGlobalStability() const;
-
     void TrySleepAll(float deltaTime);
 	
 
     // [디버그 시각화] block 자신의 지지 범위(outMinX/outMaxX)와, block이 떠받치는 전체 덩어리의 결합
-    // 무게중심(outCombinedComX)을 계산해서 그대로 돌려준다 — ResolveBalance와 완전히 같은 계산이라,
-    // F1 디버그 오버레이가 "지금 이 블럭이 안정적이라고 판단된 이유"를 화면에 그대로 그릴 수 있게 해준다.
-    // 지지대가 없으면 false를 반환(이 경우 outMinX/outMaxX/outCombinedComX는 의미 없음)
-    bool ComputeSupportDebugInfo(Block* block, const RestingChildrenMap& childrenOf, float& outMinX, float& outMaxX, float& outCombinedComX) const;
+    // 무게중심(outCombinedComX)/결합 질량(outCombinedMass)을 계산해서 그대로 돌려준다 — ResolveBalance와
+    // 완전히 같은 계산이라, F1 디버그 오버레이가 "지금 이 블럭이 안정적이라고 판단된 이유"를 화면에 그대로
+    // 그릴 수 있게 해준다. 지지대가 없으면 false를 반환(이 경우 출력 인자들은 의미 없음)
+    // [토크에 위에 얹힌 무게 반영] outCombinedMass는 ApplyGravityTorque가 block 자신의 무게만이 아니라
+    // 위에 얹힌 전체 무게로 토크를 계산하는 데 쓴다 — 안 그러면 "넘어질지"는 결합 무게중심으로 정확히
+    // 판단해놓고, 실제로 넘어뜨리는 힘은 block 혼자만의 무게로 계산해서 두 판단이 어긋난다(실전 확인:
+    // 얇은 발 하나로 지지하는 블록 위에 무거운 게 얹히면 넘어져야 한다고 판단은 하는데 실제로 넘어뜨릴
+    // 힘은 안 나와서 그 자리에 굳어버림).
+    bool ComputeSupportDebugInfo(Block* block, const RestingChildrenMap& childrenOf, float& outMinX, float& outMaxX, float& outCombinedComX, float& outCombinedMass) const;
 
     // [성능] "누가 누구 위에 얹혀 있는지"를 전체 블럭 쌍을 훑어서 한 번에 계산해둔다. 물리 스텝(Step)뿐
     // 아니라 디버그 오버레이(RenderManager::DrawSupportDebug)도 이걸 한 번만 만들어서 재사용해야 한다.
-    // [무게 분배] 자식 하나가 여러 base 위에 걸쳐 있으면, 그 자식이 각 base 위에 몇 칸씩 얹혀 있는지를
-    // 세서 총 얹힌 칸 수 대비 비율로 무게를 나눠 배분한다 — 안 그러면 각 base가 "내가 그 자식 무게
-    // 전체를 다 받친다"고 중복 계산해서, 실제로는 두 base가 나눠 받쳐 안정적인 구조도 양쪽 다 불안정으로
-    // 오판한다(L자 블록이 서로 다른 두 블록 위에 한 칸씩 걸쳤을 때 둘 다 무너지던 버그로 실전 확인됨).
+    // [무게 분배] 자식 하나가 여러 base 위에 걸쳐 있으면, 그 자식이 각 base와 얼마나 겹쳐 얹혀 있는지
+    // (겹친 X폭)를 재서 총 겹친 폭 대비 비율로 무게를 나눠 배분한다 — 안 그러면 각 base가 "내가 그
+    // 자식 무게 전체를 다 받친다"고 중복 계산해서, 실제로는 두 base가 나눠 받쳐 안정적인 구조도 양쪽 다
+    // 불안정으로 오판한다(L자 블록이 서로 다른 두 블록 위에 한 칸씩 걸쳤을 때 둘 다 무너지던 버그로
+    // 실전 확인됨).
+    // [분배 정밀화 — 칸 개수 대신 겹친 폭] 예전엔 "몇 칸 얹혔는지" 개수로만 비율을 나눴는데, 그러면 칸
+    // 하나가 10%만 살짝 걸쳤든 90% 꽉 찼든 "칸 1개"로 동일하게 세어져서 실제로 위태로운 base가 저평가될
+    // 수 있었다(가장자리에 살짝 걸친 base와 안정적으로 넓게 걸친 base가 무게를 똑같이 나눠 받는 꼴).
+    // 겹친 실제 폭으로 비율을 계산해야 걸친 정도에 비례해서 무게가 정확히 나뉜다.
     RestingChildrenMap BuildRestingChildrenMap() const;
 
 private:
@@ -138,11 +145,12 @@ private:
     // ComputeSupportDebugInfo가 전부 이 함수 하나로 지지 판정용 좌표를 얻게 해서, 세 곳이 서로 다른
     // 좌표계를 보는 문제를 없앤다.
     void GetCellSupportBounds(Block* block, int cellIndex, float& outTopY, float& outBottomY, float& outMinX, float& outMaxX) const;
-    // upper의 칸 중 몇 개가 lower 위에 얹혀 있는지(IsCellSupported와 같은 판정을, 특정 블록 한 쌍으로
-    // 좁혀서) 센다. BuildRestingChildrenMap이 이 개수로 무게 분배 비율을 계산하는 데 쓴다 — 예전엔
-    // "하나라도 얹혔는지"만 boolean으로 봤는데, 그러면 여러 base에 걸친 블록의 무게를 base마다 몇 칸씩
-    // 받치는지 구분 못 해서 나눠 계산할 수가 없었다.
-    int CountCellsRestingOnBlock(Block* upper, Block* lower) const;
+    // upper의 칸들이 lower와 실제로 겹치는 X폭의 합을 구한다(IsCellSupported와 같은 판정을, 특정 블록
+    // 한 쌍으로 좁혀서). BuildRestingChildrenMap이 이 폭으로 무게 분배 비율을 계산하는 데 쓴다 — 예전엔
+    // "얹힌 칸 개수"만 셌는데, 그러면 칸 하나가 살짝만 걸쳤든 꽉 찼든 똑같이 "1개"로 취급돼서 걸친
+    // 정도가 무게 분배에 반영이 안 됐다. 겹친 폭을 직접 더해야 살짝 걸친 base는 무게를 적게, 넓게
+    // 걸친 base는 많이 받는다.
+    float CountCellsRestingOnBlock(Block* upper, Block* lower) const;
 
     // [레이캐스트] origin에서 수직 아래 방향으로 레이를 쏴서, X가 origin.x를 포함하는 지지면(바닥 또는
     // 다른 블럭의 윗면) 중 가장 가까운 것까지의 거리를 outHitDistance로 돌려준다(못 찾으면 false).

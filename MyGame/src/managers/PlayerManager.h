@@ -8,14 +8,16 @@ class PlayerManager
 public:
     static PlayerManager& GetInstance();
 
-    // 저장된 닉네임이 있는지 (없으면 최초 실행 등, 입력을 받아야 함)
-    bool HasNickname() const;
-
-    // 현재 닉네임을 반환한다. HasNickname()이 false일 때는 빈 문자열.
+    // 현재 닉네임을 반환한다. 한 번도 정한 적 없으면 빈 문자열.
     const std::string& GetNickname() const;
 
     // 닉네임을 정하고 파일에 저장한다.
     void SetNickname(const std::string& nickname);
+
+    // 이 컴퓨터를 식별하는 고유 ID(최초 실행 시 자동 생성되어 파일에 저장됨).
+    // 온라인 랭킹은 닉네임 대신 이 값을 DB 키로 쓴다 — 서로 다른 컴퓨터가 같은 닉네임을
+    // 쓰더라도 랭킹 기록이 서로 덮어써지지 않게 하기 위함.
+    const std::string& GetDeviceId() const;
 
     // 로컬에 저장된 개인 최고 기록(m). 한 번도 기록이 없으면 0.
     float GetBestScore() const;
@@ -34,9 +36,11 @@ private:
     void SaveToFile() const;
     void LoadBestScore();
     void SaveBestScore() const;
+    void LoadOrCreateDeviceId();
 
     std::string m_nickname;
-    bool m_hasNickname = false;
+
+    std::string m_deviceId;
 
     float m_bestScore = 0.0f;
 };

@@ -20,9 +20,12 @@ public:
     // 게임 시작 시(MyGame.cpp) 한 번만 호출하면 된다.
     void Init(const std::string& databaseUrl);
 
-    // 별도 스레드에서 점수를 등록한다. 같은 닉네임으로 다시 호출하면 이전 값을 덮어쓴다
-    // (닉네임을 그대로 DB의 키로 쓰기 때문). 호출 즉시 리턴하고, 실제 전송은 백그라운드에서 진행된다.
-    void SubmitScore(const std::string& name, float heightMeters);
+    // 별도 스레드에서 점수를 등록한다. deviceId(컴퓨터별 고유 ID, PlayerManager::GetDeviceId())를
+    // 그대로 DB의 키로 쓰므로, 같은 deviceId로 다시 호출하면 이전 값을 덮어쓴다. name(닉네임)은
+    // 화면 표시용으로 같이 저장될 뿐 키로는 쓰이지 않는다 — 그래야 서로 다른 컴퓨터가 같은
+    // 닉네임을 쓰더라도 랭킹 기록이 서로 덮어써지지 않는다. 호출 즉시 리턴하고, 실제 전송은
+    // 백그라운드에서 진행된다.
+    void SubmitScore(const std::string& deviceId, const std::string& name, float heightMeters);
 
     // 별도 스레드에서 전체 랭킹을 새로 받아온다. 완료되면 GetCachedRankings()가 갱신된 값을 반환한다.
     // 호출 즉시 리턴한다 — 랭킹 패널을 열 때마다 불러서 "다음에 열 때는 최신 값"이 보이게 하는 식으로 쓴다.

@@ -422,14 +422,17 @@ void TitleScene::Update(float deltaTime)
         if (isMouseOverStart && isLeftClick)
         {
             SoundManager::GetInstance().PlaySfx("assets/Sound/Bbong.mp3");
-            if (PlayerManager::GetInstance().HasNickname())
-            {
-                SceneManager::GetInstance().ChangeScene(SceneType::Play);
-            }
-            else
+
+            // 이 컴퓨터에 저장된 닉네임이 이미 있으면(재실행 포함) 다시 묻지 않고 바로 Play로.
+            // 처음 실행이라 닉네임이 없을 때만 입력 패널을 띄운다.
+            if (PlayerManager::GetInstance().GetNickname().empty())
             {
                 m_nicknameInput.clear();
                 m_showNicknamePanel = true;
+            }
+            else
+            {
+                SceneManager::GetInstance().ChangeScene(SceneType::Play);
             }
         }
 

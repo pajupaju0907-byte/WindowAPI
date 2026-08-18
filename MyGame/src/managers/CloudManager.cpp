@@ -16,15 +16,21 @@ CloudManager& CloudManager::GetInstance()
 void CloudManager::Update(float deltaTime, float currentHeightMeters)
 {
     // 기존 구름 이동 + 화면을 완전히 벗어난 구름 제거
+    float cameraY = CameraManager::GetInstance().GetPosition().y;
     for (auto it = m_clouds.begin(); it != m_clouds.end(); )
     {
         it->position.x += it->velocityX * deltaTime;
 
         float halfSize = (Constants::CLOUD_BASE_SIZE * it->scale) / 2.0f;
-        bool offScreen = (it->position.x + halfSize < 0.0f) ||
+        bool offScreenX = (it->position.x + halfSize < 0.0f) ||
             (it->position.x - halfSize > static_cast<float>(Constants::WINDOW_WIDTH));
 
-        if (offScreen)
+        // 카메라는 위로만 움직이므로, 구름의 스크린 y는 시간이 지날수록 계속 커진다(아래로 가라앉는다).
+        // 화면 아래로 완전히 사라진 구름은 다시 보일 일이 없으므로 좌우 이탈과 동일하게 회수 대상이다.
+        float screenY = it->position.y - cameraY;
+        bool belowScreen = screenY - halfSize > static_cast<float>(Constants::WINDOW_HEIGHT);
+
+        if (offScreenX || belowScreen)
         {
             it = m_clouds.erase(it);
         }

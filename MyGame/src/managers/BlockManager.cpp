@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
@@ -12,6 +13,7 @@
 #include "../core/InputManager.h"
 #include "CameraManager.h"
 #include "SoundManager.h"
+#include "PhysicsManager.h"
 BlockManager& BlockManager::GetInstance()
 {
     static BlockManager instance;
@@ -56,11 +58,15 @@ void BlockManager::SpawnBlock(BlockType type)
 
     m_currentFallingBlock = spawnedBlock.get();
     m_blocks.push_back(std::move(spawnedBlock));
-    m_fallTimer = Constants::FALL_STEP_INTERVAL;
+    m_fallTimer = GetCurrentFallInterval();
 }
 
 void BlockManager::UpdateFalling(float deltaTime)
 {
+    // [시간에 따른 가속] 낙하 중인 블럭이 없는 찰나(락 직후~재스폰 직전)에도 시간은 계속 흘러야
+    // 하니, 아래 nullptr 얼리 리턴보다 먼저 누적한다.
+    m_elapsedPlayTime += deltaTime;
+
     if (m_currentFallingBlock == nullptr) return;
 
     // [락 딜레이] 낙하 타이머(m_fallTimer)와는 별개로, 매 프레임 "지금 내려갈 수 있는 상태인지"를
@@ -89,8 +95,17 @@ void BlockManager::UpdateFalling(float deltaTime)
     if (m_fallTimer <= 0.0f)
     {
 		m_currentFallingBlock->StepDown(); // 실패(더 못 내려감)해도 락 판단은 위에서 이미 처리했으니 무시
-		m_fallTimer += Constants::FALL_STEP_INTERVAL;
+		m_fallTimer += GetCurrentFallInterval();
     }
+}
+
+float BlockManager::GetCurrentFallInterval() const
+{
+    // 30초(SPEED_LEVEL_UP_INTERVAL_SECONDS)마다 레벨 1씩, 레벨당 FALL_INTERVAL_DECREASE_PER_LEVEL(초)만큼
+    // 줄인다. static_cast<int>로 내림해서 "딱 30초가 지나야" 다음 레벨이 되게 한다(계단식).
+    int speedLevel = static_cast<int>(m_elapsedPlayTime / Constants::SPEED_LEVEL_UP_INTERVAL_SECONDS);
+    float interval = Constants::FALL_STEP_INTERVAL - speedLevel * Constants::FALL_INTERVAL_DECREASE_PER_LEVEL;
+    return std::max(interval, Constants::MIN_FALL_STEP_INTERVAL);
 }
 
 void BlockManager::MoveCurrentBlock(int subCellDelta)
@@ -158,7 +173,7 @@ bool BlockManager::IsGameOver() const
 
 void BlockManager::Reset()
 {
-    m_blocks.clear(), m_currentFallingBlock = nullptr, m_isGameOver = false, m_fallTimer = m_lockDelayTimer = m_moveTimer = 0.0f;
+    m_blocks.clear(), m_currentFallingBlock = nullptr, m_isGameOver = false, m_fallTimer = m_lockDelayTimer = m_moveTimer = m_elapsedPlayTime = 0.0f;
 
     // 첫 SpawnBlock(BlockType::Tetromino) 호출 전에 "다음 블럭"이 미리 준비되어 있어야
     // 미리보기가 게임 시작 직후부터 빈 채로 있지 않는다.
@@ -209,8 +224,8 @@ bool BlockManager::IsPointInDeathZone(Vector2 worldPoint) const
 
 void BlockManager::CheckDeathZone()
 {
-	
-    
+
+
     if (m_isGameOver)
     {
         return;
@@ -219,7 +234,29 @@ void BlockManager::CheckDeathZone()
     for (Block* block : GetAllBlocks())
     {
         PhysicsState state = block->GetPhysicsState();
-        if (state != PhysicsState::Airborne && state != PhysicsState::Toppling)
+        bool isAirborneOrToppling = state == PhysicsState::Airborne || state == PhysicsState::Toppling;
+
+        // [미끄러지며 떨어지는 경우 데스존 누락 방지] MAX_TOPPLE_ANGLE(40도)까지 회전하지 않고도, 거의
+        // 안 기운 채로 옆으로 미끄러져 바닥 옆 허공으로 떨어지는 경우가 있다 — 물리적으로는 Toppling과
+        // 똑같은 완전 자유낙하인데 각도만 안 넘겼을 뿐이라 Awake로 남아있고, 위 조건에 안 걸려서 죽음
+        // 판정이 누락됐다. 그렇다고 Awake를 무조건 다 검사하면, 아직 뭔가에 걸쳐 미끄러지는 중(지지는
+        // 있음)인 정상적인 블록까지 가장자리를 살짝 스치기만 해도 바로 게임오버가 되어버린다. 그래서
+        // Awake인데 칸이 하나도 지지를 못 받는 "완전히 붕 뜬" 경우만 추가로 포함시킨다 — 조금이라도
+        // 뭔가에 얹혀있으면(지지 있음) 정상 물리로 붙잡힐 수 있으니 제외한다.
+        bool isFreeFallingAwake = false;
+        if (state == PhysicsState::Awake)
+        {
+            isFreeFallingAwake = true;
+            for (int i = 0; i < block->GetCellCount() && isFreeFallingAwake; ++i)
+            {
+                if (PhysicsManager::GetInstance().IsCellSupported(block, i))
+                {
+                    isFreeFallingAwake = false;
+                }
+            }
+        }
+
+        if (!isAirborneOrToppling && !isFreeFallingAwake)
         {
             continue;
         }

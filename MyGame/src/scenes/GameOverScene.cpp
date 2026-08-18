@@ -90,7 +90,10 @@ void GameOverScene::Enter()
 		SoundManager::GetInstance().PlaySfx("assets/Sound/GameOver.mp3");
 	}
 
-	RankingManager::GetInstance().SubmitScore(PlayerManager::GetInstance().GetNickname(), heightMeters);
+	RankingManager::GetInstance().SubmitScore(
+		PlayerManager::GetInstance().GetDeviceId(),
+		PlayerManager::GetInstance().GetNickname(),
+		heightMeters);
 
 	m_gameOverDropOffsetY = Constants::GAME_OVER_DROP_START_OFFSET_Y;
 	m_gameOverDropVelocityY = 0.0f;

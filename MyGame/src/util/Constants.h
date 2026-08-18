@@ -67,6 +67,17 @@ namespace Constants
 	// 이 각속도(도/초)를 넘는 Awake 블럭이 하나라도 있으면 탑이 불안정하다고 판단 (회전판 UNSTABLE_SPEED_THRESHOLD)
 	constexpr float UNSTABLE_ANGULAR_SPEED_THRESHOLD = 30.0f;
 
+	// [속도 폭주 방지 안전판] 위치 보정엔 이미 MAX_POSITION_CORRECTION_PER_STEP 상한이 있는데 속도/각속도엔
+	// 없었다 — 접촉점 2개를 순차 처리하는 방식(Block::ResolveRigidCollision 주석 참고, 예전에 "동시 처리"로
+	// 바꿨다가 더 심하게 폭주해서 되돌린 이력이 있어 다시 손대기 위험함)이 평소 얹혀서 쉬는 정도의 충돌에선
+	// 문제없지만, 짧은 시간에 여러 블록이 연달아 부딪히는 고에너지 연쇄에서는 그 오차가 겹겹이 쌓여서
+	// 결과값이 비정상적으로 커질 수 있다(실전 확인: v=674px/s, 각속도=174도/초 같은 값이 로그에 찍힘 —
+	// UNSTABLE_* 임계값의 십수 배). 원인(순차 접촉점 처리 자체)은 위험해서 안 건드리고, 매 스텝 끝에
+	// 결과 속도만 이 상한으로 눌러서 눈에 띄게 튀는 걸 막는다. 정상적인 낙하/넘어짐은 이 값 근처도 잘
+	// 안 가므로 평소엔 안 걸린다 — 값은 자리표시자라 체감에 맞게 조정할 것.
+	constexpr float MAX_LINEAR_VELOCITY = 600.0f;
+	constexpr float MAX_ANGULAR_VELOCITY = 300.0f;
+
 	// [블록별 rest timer] 이 속도(px/s) 밑으로 계속 유지돼야 Sleep 후보로 본다. UNSTABLE_SPEED_THRESHOLD보다
 	// 훨씬 작아야 한다 — 저건 "탑이 무너지고 있는가"를 보는 값이고, 이건 "이 블록 하나가 진짜 멈췄는가"를 보는 값이다.
 	constexpr float SLEEP_LINEAR_THRESHOLD = 20.0f;
@@ -115,6 +126,14 @@ namespace Constants
 	// 못 넘도록 clamp된다(쿨롱 마찰 모델) — 실제 마찰처럼 세게 눌려있을수록 더 세게 붙잡을 수 있다는 뜻.
 	// 0이면 마찰 없음(예전 상태), 1에 가까울수록 잘 안 미끄러짐
 	constexpr float FRICTION_COEFFICIENT = 0.7f;
+
+	// [Toppling 충돌 반발] 넘어져서(Toppling) 실제 물리 속도로 떨어지다 바닥/다른 블럭에 부딪힐 때만
+	// 적용하는 반발계수. 착지(Airborne->Awake)는 그리드 좌표로 위치만 스냅해서 충돌 임펄스 자체를 안
+	// 타므로 반발이 없어도 안 어색한데, Toppling은 진짜 낙하 속도로 부딪히므로 반발이 0이면 "쿵" 대신
+	// "철퍼덕"하고 죽어버리는 느낌이 든다. 평소 얹혀서 쉬는 충돌(Awake, 매 프레임 미세 보정)은 이 값을
+	// 안 써서(0 그대로) 지금의 "안정적으로 얹힘" 느낌을 그대로 유지한다. 값을 키우면 더 통통 튀고,
+	// 0이면 예전과 동일(반발 없음).
+	constexpr float TOPPLE_RESTITUTION = 0.15f;
 
 	// 무게중심 판정에서, 바닥/다른 블럭 바로 위에 얹혀 있다고 인정할 허용 오차(px)
 	constexpr float SUPPORT_CHECK_TOLERANCE = 4.0f;
@@ -168,10 +187,27 @@ namespace Constants
 	// Sleep에 못 들어가는 원인이 된다.
 	constexpr float GROUNDED_ANGULAR_DAMPING = 0.75f;
 
+	// [Sleep->Awake 완충 — 실전에서 발견된 다중 블록 폭주 완화용] 갓 깨어난(WakeUp()/Land() 직후) 블록이
+	// 곧바로 격렬한 충돌 교환에 전력으로 참여하면서 실제로 에너지를 얻어가는 폭주를 완화한다
+	// (physics_debug.log에서 두 블록이 0.8초 넘게 서로 부딪히며 속도가 70→221까지 계속 올라가는 것으로
+	// 확인 — 둘 다 그 직전에 막 깨어난 상태였다). WAKE_DAMPING_DURATION(초) 동안만 매 프레임
+	// WAKE_DAMPING_FACTOR를 곱해서, 갓 깨어난 블록이 서서히 정상 물리에 합류하게 한다. 진짜 넘어지는 중
+	// (Toppling)이거나 이미 불균형을 풀어가는 중인 블록은 건드리지 않는다(GROUNDED_ANGULAR_DAMPING과 같은
+	// 이유) — 순차 접촉점 처리 자체(더 근본적인 원인)는 위험해서 안 건드리고, 갓 깨어난 짧은 구간만 완충한다.
+	constexpr float WAKE_DAMPING_DURATION = 0.3f;
+	constexpr float WAKE_DAMPING_FACTOR = 0.9f;
+
 	// [무한 재넘어짐 방지] 옆 블록 등에 막혀서 실제로는 못 넘어가는 블록이 Sleep 없이 이만큼 연속으로
 	// BeginToppling되면(Awake로 잠깐 돌아왔다가 ResolveBalance가 곧바로 또 넘어뜨리는 걸 반복하면),
 	// 물리적으로 완전히 정확한 상태는 아니어도 그 자리에서 강제로 멈춰(ForceStabilize) 무한 진동을 끊는다.
 	constexpr int MAX_CONSECUTIVE_TOPPLE_COUNT = 5;
+
+	// [Sleep 직후 즉시 재불안정 반복 방지] 결합 무게중심이 지지 범위 경계에 거의 정확히 걸친 "칼날 위
+	// 균형" 상태에서, Sleep()의 각도/위치 스냅이 매번 그 경계를 살짝 넘나들게 만들어 "잠들자마자 곧바로
+	// 다시 불균형 에피소드 시작"이 무한 반복될 수 있다(실전 확인 — 두 블록이 완전히 같은 값으로 12초
+	// 넘게 반복). Sleeping이었던 블록에서 새 불균형 에피소드가 이만큼 연속으로 시작되면, 아주 미세한
+	// 잔여 기울기를 그대로 받아들이고 ForceStabilize로 강제 정지시킨다.
+	constexpr int MAX_SLEEP_REAWAKEN_COUNT = 5;
 
 	// [트리키 타워 핵심 수정 — 충돌 반응과 분리] 실제 관성모멘트 그대로면 무게중심이 지지범위를 벗어나도
 	// 좀처럼 안 넘어져서 둔하게 느껴진다 — Block::ApplyGravityTorque(넘어지는 회전 가속도 계산)에서만
@@ -208,6 +244,17 @@ namespace Constants
 
 	// 한 서브셀 낙하까지 걸리는 시간(초).
 	constexpr float FALL_STEP_INTERVAL = 0.4f;
+
+	// [시간에 따른 가속] 이 시간(초)마다 속도 레벨이 1씩 올라간다. 15초면 레벨 10에 2분 30초만에 도달.
+	constexpr float SPEED_LEVEL_UP_INTERVAL_SECONDS = 15.0f;
+
+	// [시간에 따른 가속] 레벨 1당 FALL_STEP_INTERVAL에서 줄어드는 시간(초).
+	constexpr float FALL_INTERVAL_DECREASE_PER_LEVEL = 0.03f;
+
+	// [시간에 따른 가속] 아무리 레벨이 올라가도 이 값 밑으로는 안 내려감(하한).
+	// FALL_STEP_INTERVAL(0.4) 기준 약 레벨 9~10(4.5~5분)에서 도달해 그 뒤로는 속도가 고정된다.
+	// 체감이 너무 쉽거나 어려우면 세 값 다 조정할 것.
+	constexpr float MIN_FALL_STEP_INTERVAL = 0.12f;
 
 	// [락 딜레이] 낙하 중인 블럭이 더 못 내려가는 상태로 이 시간(초) 이상 버티면 그때 착지(Lock) 확정한다.
 	// 막힌 즉시 Lock하면, 좁은 틈으로 옆으로 비켜 넣으려는 도중에도 락이 걸려버려서 못 들어간다.
@@ -395,9 +442,9 @@ namespace Constants
 	constexpr float CLOUD_MIN_HEIGHT_METERS = 10.0f;      // 이 높이 이상부터 구름이 스폰되기 시작
 	constexpr float CLOUD_HEIGHT_FOR_MAX_CHANCE = 30.0f;  // 이 높이에서 스폰 확률이 최대치에 도달
 	constexpr float CLOUD_SPAWN_CHECK_INTERVAL = 2.0f;    // 몇 초마다 한 번씩 스폰을 시도할지
-	constexpr float CLOUD_BASE_SPAWN_CHANCE = 0.3f;       // MIN_HEIGHT에 막 도달했을 때의 스폰 확률
+	constexpr float CLOUD_BASE_SPAWN_CHANCE = 0.6f;       // MIN_HEIGHT에 막 도달했을 때의 스폰 확률
 	constexpr float CLOUD_MAX_SPAWN_CHANCE = 0.85f;       // HEIGHT_FOR_MAX_CHANCE 이상일 때의 스폰 확률
-	constexpr int CLOUD_MAX_COUNT = 6;                    // 동시에 존재할 수 있는 최대 구름 개수
+	constexpr int CLOUD_MAX_COUNT = 20;                    // 동시에 존재할 수 있는 최대 구름 개수
 
 	constexpr float CLOUD_MIN_SCALE = 0.6f;               // 랜덤 크기 배율 최소
 	constexpr float CLOUD_MAX_SCALE = 1.6f;               // 랜덤 크기 배율 최대

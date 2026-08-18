@@ -63,6 +63,28 @@ public:
 	float GetRestTimer() const;
 	float GetActiveTimer() const;
 
+	// [Sleep->Awake 완충 — 실전에서 발견된 다중 블록 폭주 완화용] WakeUp()/Land() 직후부터 흐르는 시간.
+	// 갓 깨어난 블록이 곧바로 격렬한 충돌 교환(예: 넘어지는 블록과 연속 접촉)에 전력으로 참여하면서
+	// 실제로 에너지를 얻어가는 걸(physics_debug.log에서 두 블록이 0.8초 넘게 부딪히며 속도가 70→221까지
+	// 계속 올라가는 것으로 확인) 완화하려고, PhysicsManager::Step()이 이 값이 WAKE_DAMPING_DURATION
+	// 이내인 동안만 추가 감쇠를 건다. 순차 접촉점 처리 자체(더 근본적인 원인)는 위험해서 안 건드리고,
+	// 갓 깨어난 시점만 완충한다.
+	void AdvanceWakeTimer(float deltaTime);
+	float GetWakeTimer() const;
+
+	// [Sleep->Awake 완충 — 연쇄 전파 감쇠, 실전에서 발견된 "먼 끝 블록이 갑자기 튀는" 버그 수정] 이
+	// 블록이 지금 Sleeping에서 깨어난 게 "몇 번째 연쇄 전달"인지. 새로 착지(Land)했거나 스스로 넘어지기
+	// 시작(BeginToppling)한 블록, 또는 진짜로 안정돼서 잠들었다(Sleep) 직후는 0(=새로운 에너지원) —
+	// 반면 PhysicsManager::ResolveBlockPairCollision이 "이미 충격을 전달받아 깨어난 블록"이 다시 다른
+	// Sleeping 블록을 때려서 깨울 때는, 때린 쪽의 깊이+1로 설정한다. 탄탄하게 쌓인 탑에 블록 하나가
+	// 떨어지면 접촉이 연쇄적으로 이어진 여러 Sleeping 블록을 한 스텝 안에서 순서대로 깨울 수 있는데,
+	// 매번 독립적으로 같은 크기의 완충(WAKE_DAMPING_FACTOR)만 걸면 사슬 끝까지 갈수록 근본 원인
+	// (접촉점 순차 처리의 부정확성, PhysicsManager round 8/11 참고)이 누적한 잔여 힘이 안 죽고 살아남아
+	// 맨 끝 블록에서 갑자기 "툭" 튀어나오는 것처럼 보인다. 깊이가 늘수록 완충을 더 세게 걸어서, 연쇄가
+	// 진행될수록 남는 힘이 기하급수적으로 줄게 한다(Step()의 2.6단계 주석 참고).
+	int GetWakeChainDepth() const;
+	void SetWakeChainDepth(int depth);
+
 	// Airborne -> Awake 전환. 착지 시 BlockManager가 호출해 그리드 좌표를 월드 좌표(m_position)로
 	// 확정하고 물리 시뮬레이션을 시작시키는 지점.
 	void Land();
@@ -126,7 +148,7 @@ public:
 
 	// 렌더링용 회전 각도(도 단위)
 	float GetAngle() const;
-	// 각속도(도/초). CheckGlobalStability가 회전까지 안정적인지 판단할 때 씀
+	// 각속도(도/초)
 	float GetAngularVelocity() const;
 
 	// PhysicsManager가 Awake 상태 블럭만 골라내려고 씀
@@ -156,7 +178,14 @@ public:
 	// 더 세게 가속되고, 관성모멘트가 큰(길쭉하거나 넓게 퍼진) 모양일수록 덜 가속된다 — 실제 도미노가
 	// 처음엔 천천히, 기울수록 빨리 넘어가는 이유와 같은 원리. 순간적으로 각속도를 꽂아넣던 예전 방식
 	// (TUMBLE_ANGULAR_VELOCITY 킥) 대신 진짜 중력 물리로 대체한 것. 균형 범위 안이면 애초에 호출되지 않는다
-	void ApplyGravityTorque(Vector2 pivotWorld, float deltaTime);
+	// [위에 얹힌 무게 반영 — 실전에서 발견된 버그 수정] combinedComX/combinedMass는 이 블록 혼자만의
+	// 무게중심/질량이 아니라, PhysicsManager::ComputeSupportDebugInfo가 계산한 "이 블록이 떠받치는 전체
+	// (자신 + 위에 얹힌 모든 블럭)"의 결합값이다. "넘어질지" 판단은 이미 이 결합 무게중심으로 하면서
+	// 정작 "얼마나 세게 넘어가는지"는 이 블록 혼자만의 무게로 계산하면, 얇은 지지대 위에 무거운 게
+	// 옆으로 삐져나와 얹힌 경우 넘어져야 한다고 판단은 해도 실제로 넘어뜨릴 힘(또는 방향)이 안 나와서
+	// 그 자리에 굳어버린다 — 위에 얹힌 것의 관성모멘트까지 재귀로 정확히 합산하는 건 안 하고(그건 훨씬
+	// 큰 변경이자 위험 부담이라 보류), 토크를 만드는 힘(질량)과 지렛대 길이(r.x)만 결합값으로 바꾼다.
+	void ApplyGravityTorque(Vector2 pivotWorld, float combinedComX, float combinedMass, float deltaTime);
 
 	// Awake -> Toppling 전환. 그 순간의 실제 속도/각속도를 그대로 이어받아 계속 낙하한다.
 	// PhysicsManager::Update가 매 프레임 GetAngle()이 MAX_TOPPLE_ANGLE을 넘었는지 직접 감시하다가 호출한다 —
@@ -168,6 +197,12 @@ public:
 	// PhysicsManager::ResolveBalance가 이 값이 MAX_CONSECUTIVE_TOPPLE_COUNT를 넘으면 다시 넘어뜨리는
 	// 대신 ForceStabilize()로 강제로 멈추게 하는 데 쓴다.
 	int GetConsecutiveToppleCount() const;
+
+	// [Sleep 직후 즉시 재불안정 반복 방지] m_sleepReawakenCount 선언부(아래) 주석 참고. Sleeping이었던
+	// 블록에서 새 불균형 에피소드가 시작될 때마다 PhysicsManager::ResolveBalance가 이걸 불러 늘리고,
+	// MAX_SLEEP_REAWAKEN_COUNT를 넘으면 그 자리에서 바로 ForceStabilize()한다.
+	int GetSleepReawakenCount() const;
+	void AdvanceSleepReawakenCount();
 
 	// [넘어짐 재발 판정 기준각 — 실전에서 발견된 무한 진동 버그 수정] 이 블록이 마지막으로 "확실히
 	// 안정됐다"고 확인된 순간의 각도. Land()에서 0으로 리셋되고, Sleep()이나(TrySleepAll/ForceStabilize
@@ -189,6 +224,13 @@ public:
 	void AdvanceImbalanceTimer(float deltaTime);
 	// 균형이 돌아왔을 때 호출 — 불균형 지속시간과 아래 "끼임" 판정을 함께 초기화한다.
 	void ResetImbalanceTimer();
+	// [불균형 깜빡임 방지] 경계선에서 무게중심이 미세하게 안팎을 오가면, "균형으로 돌아왔다"는 판정이
+	// 한두 프레임마다 튀어서 ResetImbalanceTimer가 계속 불려버린다 — 그러면 실제로는 수 초째 제자리인
+	// 블록도 TOPPLE_STUCK_TIMEOUT이 단 한 번도 연속 3초를 못 채워서 끼임을 영원히 못 잡는다(실전 확인:
+	// 6초 넘게 40도 근처에서 진동하던 블록이 이 타이머 리셋 때문에 안전장치에 안 걸림). 완전히 0으로
+	// 되돌리는 대신 이 프레임 분(deltaTime)만 깎아서, 정말로 오래(수십 프레임 연속) 안정되면 자연히
+	// 0 밑으로 내려가 지금과 동일하게 리셋되지만, 짧은 깜빡임 한두 번엔 누적 시간이 거의 안 줄어든다.
+	void DecayImbalanceTimer(float deltaTime);
 	float GetImbalanceTimer() const;
 
 	// [pivot 고정 — 넘어짐 방향 오류 방지] 이번 불균형 에피소드의 토크 계산용 pivot을 고정해서 기억해둔다.
@@ -259,6 +301,12 @@ protected:
 	float m_angularVelocity = 0.0f;
 	float m_mass = 1.0f;
 	float m_activeTimer = 0.0f;
+	// [Sleep->Awake 완충] GetWakeTimer() 선언부(위) 주석 참고. WakeUp()/Land()에서 0으로 리셋된다.
+	float m_wakeTimer = 0.0f;
+	// [Sleep->Awake 완충 — 연쇄 전파 감쇠] GetWakeChainDepth() 선언부(위) 주석 참고. Land()/BeginToppling()/
+	// Sleep()에서 0으로 리셋되고, PhysicsManager::ResolveBlockPairCollision이 연쇄 충격으로 깨울 때만
+	// SetWakeChainDepth()로 갱신한다.
+	int m_wakeChainDepth = 0;
 
 	// [넘어짐 재발 판정 기준각] 마지막으로 안정이 확인된 각도. Land()에서 0으로, ConfirmRestingAngle()
 	// 호출마다 그 순간 각도로 갱신된다.
@@ -276,6 +324,16 @@ protected:
 	// 있고 속도가 낮아져도(SettleToppledBlocks) Awake로 돌아오자마자 곧바로 또 Toppling으로 되돌아가길
 	// 반복한다. Sleep()에서 0으로 리셋되고, BeginToppling()마다 1씩 늘어난다.
 	int m_consecutiveToppleCount = 0;
+	// [Sleep 직후 즉시 재불안정 반복 방지 — 실전에서 발견된 무한 루프 버그] 결합 무게중심이 지지 범위
+	// 경계선에 거의 정확히 걸친 "칼날 위 균형" 상태에서는, Sleep()의 각도/위치 스냅(ANGLE_SNAP_TOLERANCE/
+	// POSITION_SNAP_TOLERANCE 이내면 반올림)이 매번 그 경계를 살짝 넘나들게 만들어서 "진짜로 잠들었다가
+	// 곧바로 다시 불균형 에피소드가 시작"되는 게 무한 반복될 수 있다(physics_debug.log에서 두 블록이 완전히
+	// 같은 값으로 12초 넘게 반복하는 것으로 실전 확인됨). 각 개별 사이클은 그 자체로는 정상 판정이라
+	// m_imbalanceTimer/DecayImbalanceTimer(같은 에피소드 안의 깜빡임 방지용)로는 못 잡는다 — 이건 매번
+	// 진짜로 Sleep까지 다녀오는 별개의 사이클이기 때문이다. m_consecutiveToppleCount와 같은 방식으로
+	// Land()/BeginToppling()에서만 0으로 리셋되고(m_activeTimer와 같은 이유 — Sleep<->Wake를 오가는 동안
+	// 안 끊기고 누적돼야 함), ResolveBalance가 "Sleeping이었던 블록이 새 불균형 에피소드를 시작"할 때마다 늘린다.
+	int m_sleepReawakenCount = 0;
 	// [진짜 넘어지는 중 보호 / 끼임 판정] ResolveBalance가 무게중심 불균형을 감지해서 중력 토크를 거는
 	// 동안 끊기지 않고 누적되는 시간. 균형이 돌아오거나 Land()/BeginToppling() 때 0으로 리셋된다.
 	float m_imbalanceTimer = 0.0f;

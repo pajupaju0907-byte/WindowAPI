@@ -293,8 +293,8 @@ void RenderManager::DrawSupportDebug(ID2D1RenderTarget* renderTarget)
 			continue;
 		}
 
-		float minX = 0.0f, maxX = 0.0f, combinedComX = 0.0f;
-		bool hasSupport = PhysicsManager::GetInstance().ComputeSupportDebugInfo(block, restingChildren, minX, maxX, combinedComX);
+		float minX = 0.0f, maxX = 0.0f, combinedComX = 0.0f, unusedCombinedMass = 0.0f;
+		bool hasSupport = PhysicsManager::GetInstance().ComputeSupportDebugInfo(block, restingChildren, minX, maxX, combinedComX, unusedCombinedMass);
 		if (!hasSupport)
 		{
 			continue;

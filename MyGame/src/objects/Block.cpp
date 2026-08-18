@@ -9,6 +9,25 @@
 #include "../util/MathUtil.h"
 #include <cmath>
 
+namespace
+{
+	// [지지 없이 얼어붙는 버그 수정 — 마찰에도 같은 기준 적용] normal(접촉 법선)이 수직에서
+	// Constants::SUPPORT_SURFACE_MAX_TILT_DEGREES 이내로 벗어났는지. 기울어진 블록 위/옆면에 닿으면
+	// TestOBBCollision의 SAT 법선도 그 기울기를 그대로 따라 나온다 — 즉 법선이 수직에서 많이 벗어났다는
+	// 건 접촉면 자체가 기울어져 있다는 뜻이고, 이건 PhysicsManager::IsNearAxisAlignedAngle이 "이 표면은
+	// 지지로 못 믿는다"고 판단하는 것과 정확히 같은 기하학적 상황이다. 이 조건 없이 마찰(쿨롱, 계수 0.7)을
+	// 그대로 걸면, 경사가 완만해서(예: 17도) 마찰이 실제로 붙잡을 수 있는 범위 안이면 물리적으로는 "정상"
+	// 이지만 — 공식 지지 판정(GetCellSupportRange)은 이미 "지지 없음"이라고 봐서 다음 순간 떨어지거나
+	// 미끄러져야 하는데, 마찰이 그 아주 작은 접선 속도를 매 프레임 흡수해버려 영원히 그 자리에 붙박인다
+	// ("지지가 없다는데도 얼어붙는" 버그의 실제 원인 — 실전 확인). 법선 방향의 침투 보정/충돌 임펄스
+	// (아래 1~5단계, 폭주 이력이 있어 손대면 위험한 부분)는 그대로 두고, 마찰(6단계)만 이 조건으로 좁힌다.
+	bool IsContactNormalNearVertical(Vector2 normal)
+	{
+		float cosMaxTilt = static_cast<float>(std::cos(MathUtil::DegreesToRadians(Constants::SUPPORT_SURFACE_MAX_TILT_DEGREES)));
+		return std::fabs(normal.y) >= cosMaxTilt;
+	}
+}
+
 Block::Block() = default;
 Block::~Block() = default;
 
@@ -388,9 +407,11 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 	float momentOfInertia = GetMomentOfInertia();
 	float inverseMassTerm = (1.0f / m_mass) + (rCrossNormal * rCrossNormal) / momentOfInertia;
 
-	// [반발 제거] 튕김 없이 순수 비탄성 충돌로 처리한다 — 부딪힌 방향의 속도를 완전히 흡수만 하고
-	// 되돌려주지 않는다.
-	float impulseMagnitude = -velocityAlongNormal / inverseMassTerm;
+	// [Toppling만 반발] 평소 얹혀서 쉬는 충돌(반발 0, 비탄성)은 그대로 두고, 넘어지는 중(Toppling)인
+	// 블록이 실제 낙하 속도로 부딪힐 때만 TOPPLE_RESTITUTION만큼 튕겨준다 — 이유는 Constants.h의
+	// TOPPLE_RESTITUTION 주석 참고.
+	float restitution = (m_physicsState == PhysicsState::Toppling) ? Constants::TOPPLE_RESTITUTION : 0.0f;
+	float impulseMagnitude = -(1.0f + restitution) * velocityAlongNormal / inverseMassTerm;
 
 	// 5) 구한 임펄스를 선속도/각속도 양쪽에 나눠 반영한다
 	Vector2 impulse = normal * impulseMagnitude;
@@ -410,7 +431,8 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 	// 걸려 공중에 뜬 채로 ForceStabilize되는 것으로 physics_debug.log에서 실전 확인됨. 넘어지는 도중엔
 	// 마찰로 붙들 "정지 자세"가 아니므로 생략하고, 중력+수직 임펄스만으로 코너를 타고 계속 회전해
 	// 빠져나가게 한다.
-	if (m_physicsState != PhysicsState::Toppling)
+	// [지지 없이 얼어붙는 버그 수정] IsContactNormalNearVertical 조건 추가 이유는 이 파일 상단 헬퍼 주석 참고.
+	if (m_physicsState != PhysicsState::Toppling && IsContactNormalNearVertical(normal))
 	{
 		Vector2 tangent = { -normal.y, normal.x };
 		float velocityAlongTangent = contactVelocity.x * tangent.x + contactVelocity.y * tangent.y;
@@ -491,8 +513,11 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 		(rSelfCrossNormal * rSelfCrossNormal) / momentOfInertiaSelf +
 		(rOtherCrossNormal * rOtherCrossNormal) / momentOfInertiaOther;
 
-	// [반발 제거] ResolveRigidCollision과 같은 이유로 튕김 없이 순수 비탄성 충돌로 처리한다.
-	float impulseMagnitude = -velocityAlongNormal / inverseMassTerm;
+	// [Toppling만 반발] ResolveRigidCollision과 같은 이유 — this/other 둘 중 하나라도 Toppling(실제
+	// 낙하 속도로 부딪히는 중)이면 반발을 준다. 둘 다 그냥 얹혀 쉬는 중이면 예전처럼 반발 0.
+	bool eitherToppling = m_physicsState == PhysicsState::Toppling || other->m_physicsState == PhysicsState::Toppling;
+	float restitution = eitherToppling ? Constants::TOPPLE_RESTITUTION : 0.0f;
+	float impulseMagnitude = -(1.0f + restitution) * velocityAlongNormal / inverseMassTerm;
 	Vector2 impulse = normal * impulseMagnitude;
 
 	// 5) 뉴턴의 3법칙: this는 +impulse(=other에게서 멀어지는 방향), other는 -impulse(=this에게서 멀어지는 방향)
@@ -510,7 +535,8 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 	// [넘어지는 중엔 마찰 생략] ResolveRigidCollision과 같은 이유 — this/other 중 하나라도 Toppling이면
 	// (다른 블록 모서리에 걸친 채 회전하며 빠져나가는 코너에) 마찰이 그 회전을 붙잡아 각속도를 죽이는 걸
 	// 막는다.
-	if (m_physicsState != PhysicsState::Toppling && other->m_physicsState != PhysicsState::Toppling)
+	// [지지 없이 얼어붙는 버그 수정] IsContactNormalNearVertical 조건 추가 이유는 이 파일 상단 헬퍼 주석 참고.
+	if (m_physicsState != PhysicsState::Toppling && other->m_physicsState != PhysicsState::Toppling && IsContactNormalNearVertical(normal))
 	{
 		Vector2 tangent = { -normal.y, normal.x };
 		float velocityAlongTangent = relativeVelocity.x * tangent.x + relativeVelocity.y * tangent.y;
@@ -541,14 +567,20 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 	other->m_angularVelocity = MathUtil::RadiansToDegrees(newAngularVelocityOtherRad);
 }
 
-void Block::ApplyGravityTorque(Vector2 pivotWorld, float deltaTime)
+void Block::ApplyGravityTorque(Vector2 pivotWorld, float combinedComX, float combinedMass, float deltaTime)
 {
 	// 무게중심에서 pivot까지의 벡터 r. 중력(0, mass*GRAVITY)이 이 지렛대에 만들어내는 토크는
 	// r.x * gravityForce.y - r.y * gravityForce.x인데, gravityForce.x가 항상 0이라 뒷항은 사라지고
 	// 결국 "수평 거리(r.x) * 중력 크기"만 남는다 — 기울수록(r.x가 커질수록) 더 세게 돌아가는 이유.
+	// [위에 얹힌 무게 반영] r.x(지렛대 길이)는 이 블록 혼자만의 무게중심이 아니라 combinedComX(자신 +
+	// 위에 얹힌 전체의 결합 무게중심)를 쓴다 — pivot 기준 판단(ResolveBalance의 isImbalanced)도 이미
+	// combinedComX로 하므로, 방향이 항상 일치한다(자기 자신만의 무게중심을 쓰면 pivot 반대쪽에 있어서
+	// 오히려 반대 방향 토크가 나올 수 있었다 — 실전 확인). r.y(높이)는 계산이 복잡해지는 걸 피하려고
+	// 이 블록 자신의 무게중심 높이를 그대로 쓴다(근사) — 토크 자체는 r.y와 무관(gravityForce.x=0)하고
+	// 아래 관성 계산에서만 근사치로 쓰인다.
 	Vector2 centerOfMassWorld = GetRenderPosition() + GetCenterOfMassLocal() * Constants::TILE_SIZE;
-	Vector2 r = centerOfMassWorld - pivotWorld;
-	float torqueAboutPivot = r.x * (m_mass * Constants::GRAVITY);
+	Vector2 r = { combinedComX - pivotWorld.x, centerOfMassWorld.y - pivotWorld.y };
+	float torqueAboutPivot = r.x * (combinedMass * Constants::GRAVITY);
 
 	// [평행축 정리] 지금 실제로 도는 축은 무게중심이 아니라 pivot이므로, 무게중심 기준 관성모멘트
 	// (GetMomentOfInertia)에 m*거리^2를 더해 pivot 기준 관성모멘트로 바꿔줘야 한다. 이걸 빼먹으면
@@ -556,8 +588,11 @@ void Block::ApplyGravityTorque(Vector2 pivotWorld, float deltaTime)
 	// [트리키 타워 핵심 수정] "넘어지기 쉽게" 관성을 깎는 튜닝은 GetMomentOfInertia() 자체가 아니라
 	// 여기서만 TOPPLE_INERTIA_SCALE로 곱한다 — 충돌 임펄스 계산과 공유하는 값을 깎으면 안 되는
 	// 이유는 GetMomentOfInertia() 주석 참고.
+	// [위에 얹힌 무게 반영] 평행축 항(m*거리^2)의 질량도 combinedMass로 바꿔서 토크 쪽과 일관되게
+	// 맞춘다. GetMomentOfInertia() 자체(자기 회전 저항)는 이 블록 혼자만의 값을 그대로 쓴다 — 위에
+	// 얹힌 블럭들의 자체 관성모멘트까지 재귀로 정확히 합산하는 건 훨씬 큰 변경이라 일부러 안 했다(근사).
 	float distanceSquared = r.x * r.x + r.y * r.y;
-	float inertiaAboutPivot = GetMomentOfInertia() * Constants::TOPPLE_INERTIA_SCALE + m_mass * distanceSquared;
+	float inertiaAboutPivot = GetMomentOfInertia() * Constants::TOPPLE_INERTIA_SCALE + combinedMass * distanceSquared;
 
 	float angularAccelerationRad = torqueAboutPivot / inertiaAboutPivot;
 	m_angularVelocity += MathUtil::RadiansToDegrees(angularAccelerationRad) * deltaTime;
@@ -578,6 +613,14 @@ void Block::BeginToppling()
 
 	// [무한 재넘어짐 방지] Sleep() 없이 다시 여기로 왔다는 뜻이므로 1 늘린다. Sleep()에서 0으로 리셋된다.
 	++m_consecutiveToppleCount;
+
+	// [Sleep 직후 즉시 재불안정 반복 방지] 진짜로 넘어지기 시작했다는 건 확실히 새로운 사건이므로,
+	// m_activeTimer와 같은 이유로 여기서 0으로 리셋한다.
+	m_sleepReawakenCount = 0;
+
+	// [Sleep->Awake 완충 — 연쇄 전파 감쇠] 스스로 무게중심이 무너져 넘어지기 시작한 것도 진짜 새로운
+	// 에너지원이므로, 이전에 연쇄로 전달받았던 깊이는 여기서 끊는다.
+	m_wakeChainDepth = 0;
 }
 
 int Block::GetConsecutiveToppleCount() const
@@ -588,6 +631,16 @@ int Block::GetConsecutiveToppleCount() const
 void Block::ResetConsecutiveToppleCount()
 {
 	m_consecutiveToppleCount = 0;
+}
+
+int Block::GetSleepReawakenCount() const
+{
+	return m_sleepReawakenCount;
+}
+
+void Block::AdvanceSleepReawakenCount()
+{
+	++m_sleepReawakenCount;
 }
 
 void Block::ConfirmRestingAngle()
@@ -609,6 +662,16 @@ void Block::ResetImbalanceTimer()
 {
 	m_imbalanceTimer = 0.0f;
 	m_isWedged = false;
+}
+
+void Block::DecayImbalanceTimer(float deltaTime)
+{
+	m_imbalanceTimer -= deltaTime;
+	if (m_imbalanceTimer <= 0.0f)
+	{
+		// 진짜로 다 풀렸다 — 끼임 표시까지 포함해서 완전히 리셋한다.
+		ResetImbalanceTimer();
+	}
 }
 
 float Block::GetImbalanceTimer() const
@@ -694,9 +757,35 @@ void Block::DampAngularVelocity(float dampingFactor)
 
 void Block::WakeUp()
 {
-	// [강제 취침 타임아웃] 여기서도 타이머를 리셋하지 않는다 — Sleep()과 동일한 이유:
+	// [강제 취침 타임아웃] m_activeTimer는 여기서 리셋하지 않는다 — Sleep()과 동일한 이유:
 	// Sleep<->Wake를 반복하는 동안 m_activeTimer가 끊기지 않고 누적돼야 ForceSleepStuckBlocks가
 	// 3초를 채울 수 있다.
+	//
+	// [지지 없이 얼어붙는 버그 수정 — rest timer는 반대로 여기서 리셋해야 한다] m_restTimer는
+	// "지지대가 있고 저속인 상태가 얼마나 *끊기지 않고* 지속됐는지"를 재는 타이머라(m_restTimer
+	// 선언부 주석: "조건이 깨지면(지지 소실/충돌/속도 초과) 즉시 0으로 리셋된다"), 깨어나는 것 자체가
+	// 바로 그 "조건이 깨짐"이다. 예전엔 여기서 안 지워서, 충돌로 잠깐 깨어나도 그 결과 속도가
+	// SLEEP_LINEAR_THRESHOLD보다만 낮으면 TrySleepAll이 예전에 쌓아둔 낡은 rest timer를 그대로 이어받아
+	// 거의 같은 스텝에 곧바로 재취침시켰다. 그런데 위치/각도를 실제로 갱신하는 Integrate()는 Awake 상태로
+	// "다음 스텝의 1단계"에 살아있을 때만 도므로, 이렇게 한 스텝 만에 도로 잠들면 방금 충돌로 받은
+	// 속도/각속도가 반영될 기회 자체가 없어(Sleep()이 각속도를 0으로 지워버림) — 실제로는 매 프레임
+	// Wake/Sleep을 반복하며 속도만 쌓였다 지워지길 반복할 뿐, 위치/각도는 전혀 안 바뀌어서 겉보기엔
+	// 완전히 얼어붙은 것처럼 보였다(physics_debug.log로 실전 확인 — 같은 블록이 20스텝 동안 매번
+	// WAKE 직후 SLEEP을 반복하는데 angle이 단 한 번도 안 바뀜). 깨어날 때마다 새로 0.3초(SLEEP_DELAY)를
+	// 다시 채우게 해야, 그 사이 최소 한 번은 Integrate()가 돌아 실제로 움직일 기회를 갖는다.
+	ResetRestTimer();
+
+	// [Sleep->Awake 완충] 갓 깨어난 시점부터 다시 재므로, WakeUp()마다 0으로 리셋한다.
+	m_wakeTimer = 0.0f;
+
+	// [Sleep->Awake 완충 — 연쇄 전파 감쇠] 기본값은 "새로운 에너지원"인 0이다. 이 블록이 이미 연쇄로
+	// 충격을 전달받은 다른 블록에게 맞아서 깨어나는 특수한 경우(PhysicsManager::ResolveBlockPairCollision)
+	// 에만, WakeUp() 호출 바로 뒤에서 SetWakeChainDepth()로 이 기본값을 덮어써서 실제 연쇄 깊이를
+	// 반영한다 — ResolveBalance의 "지지 소실" 경로처럼 연쇄와 무관하게 깨는 경우까지 여기서 항상
+	// 0으로 리셋해둬야, 예전 Sleep 이전에 남아있던 낡은 깊이가 무관한 다음 각성에 잘못 새어 들어가는
+	// 걸 막는다(그래야 Sleep()/BeginToppling()에서 따로 리셋할 필요도 없다 — 다음 WakeUp()이 항상 0부터 시작).
+	m_wakeChainDepth = 0;
+
 	m_physicsState = PhysicsState::Awake;
 }
 void Block::Sleep()
@@ -707,8 +796,20 @@ void Block::Sleep()
 	// 90도 배수에서 ANGLE_SNAP_TOLERANCE 이내로 "거의" 다 정렬됐을 때만 마저 반올림한다 — 다른 블럭에
 	// 기대서 진짜로 비스듬히 안정된 블럭까지 강제로 우뚝 세우면 안 되고, 물리 오차 수준의 미세한
 	// 잔여 기울기만 깔끔하게 정리한다.
+	// [오뚜기처럼 도로 일어서는 버그 수정] m_isWedged(ForceStabilize로 강제 정지된 경우)일 땐 이 스냅을
+	// 건너뛴다 — ForceStabilize가 부르는 Sleep()은 "정상적으로 조용히 멈춤"이 아니라 "넘어지다 만
+	// 진짜 물리적 각도에서 강제로 중단된 것"이라, 그 각도가 우연히 90도 배수 12도 이내(예: 9도)에
+	// 있다는 이유만으로 0도로 되돌리면 안 된다 — 실제로 안 일어난 블록이 시각적으로만 벌떡 일어나 보인다.
+	// [다른 블록의 지지 기반이 영구히 망가지는 버그 수정] 다만 무조건 건너뛰면 안 된다 — wedge 각도가
+	// SUPPORT_SURFACE_MAX_TILT_DEGREES(5도) 이내면, 그건 눈에 거의 안 보일 만큼 작은 기울기라 스냅해도
+	// "벌떡 일어나는" 것처럼 안 보이는데, 스냅을 안 하면 이 블록은 지지 판정(IsNearAxisAlignedAngle)
+	// 기준으로 축 정렬을 영원히 살짝 못 넘겨서, 이 위에 뭘 얹어도 "공식적으로 지지 없음"이 되어 아무리
+	// 모양이 잘 맞아도 계속 넘어가 버린다(실전 확인 — 겉보기엔 멀쩡해 보이는 발판인데 그 위에 얹은 블록이
+	// 계속 넘어짐). 그래서 "지지 판정 기준으로도 이미 못 믿을 정도로" 기운 경우에만 스냅을 건너뛴다.
 	float nearestRightAngle = std::round(m_angle / 90.0f) * 90.0f;
-	if (std::fabs(m_angle - nearestRightAngle) <= Constants::ANGLE_SNAP_TOLERANCE)
+	float angleFromRightAngle = std::fabs(m_angle - nearestRightAngle);
+	bool isVisiblyTiltedWedge = m_isWedged && angleFromRightAngle > Constants::SUPPORT_SURFACE_MAX_TILT_DEGREES;
+	if (!isVisiblyTiltedWedge && angleFromRightAngle <= Constants::ANGLE_SNAP_TOLERANCE)
 	{
 		m_angle = nearestRightAngle;
 	}
@@ -775,6 +876,26 @@ float Block::GetActiveTimer() const
 	return m_activeTimer;
 }
 
+void Block::AdvanceWakeTimer(float deltaTime)
+{
+	m_wakeTimer += deltaTime;
+}
+
+float Block::GetWakeTimer() const
+{
+	return m_wakeTimer;
+}
+
+int Block::GetWakeChainDepth() const
+{
+	return m_wakeChainDepth;
+}
+
+void Block::SetWakeChainDepth(int depth)
+{
+	m_wakeChainDepth = depth;
+}
+
 void Block::Land()
 {
 	m_position = { m_gridX * Constants::SUBCELL_SIZE, m_gridY * Constants::SUBCELL_SIZE };
@@ -783,4 +904,9 @@ void Block::Land()
 	m_imbalanceTimer = 0.0f;
 	m_isWedged = false;
 	m_restAngleReference = 0.0f;
+	m_sleepReawakenCount = 0;
+	m_wakeTimer = 0.0f;
+	// [Sleep->Awake 완충 — 연쇄 전파 감쇠] Land()는 WakeUp()을 거치지 않고 직접 상태를 바꾸므로,
+	// WakeUp()의 기본 리셋을 여기서도 똑같이 해줘야 한다 — 새로 착지한 블록은 항상 깊이 0인 새 에너지원이다.
+	m_wakeChainDepth = 0;
 }

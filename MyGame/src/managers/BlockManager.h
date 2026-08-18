@@ -67,6 +67,11 @@ private:
     // 코드가 두 곳에 따로 있으면 나중에 어긋나기 쉬워서 한 곳으로 모았다.
     std::unique_ptr<Block> CreateRandomTetromino();
 
+    // [시간에 따른 가속] m_elapsedPlayTime 기준으로 현재 속도 레벨을 계산해, 그 레벨에 맞는
+    // 낙하 간격(초)을 리턴한다. SpawnBlock()과 UpdateFalling()이 m_fallTimer를 (재)설정할 때
+    // Constants::FALL_STEP_INTERVAL 대신 이 함수를 쓴다 — 두 곳이 각자 계산하면 어긋나기 쉬워서 한 곳으로 모았다.
+    float GetCurrentFallInterval() const;
+
     BlockManager() = default;
     ~BlockManager();
     BlockManager(const BlockManager&) = delete;
@@ -84,6 +89,10 @@ private:
 
     // 다음 그리드 낙하 스텝(StepDown)까지 남은 시간
     float m_fallTimer = 0.0f;
+
+    // [시간에 따른 가속] Reset() 이후(=이번 판 시작) 흐른 시간 누적. GetCurrentFallInterval()이
+    // 이 값으로 속도 레벨을 계산한다.
+    float m_elapsedPlayTime = 0.0f;
 
     // [락 딜레이] 더 못 내려가는 상태가 지속된 시간. LOCK_DELAY_DURATION을 넘기면 그때 Lock한다 —
     // 막힌 그 순간 바로 Lock하면, 옆으로 비켜서 좁은 틈에 끼워 넣으려는 도중에도 락이 걸려버린다.

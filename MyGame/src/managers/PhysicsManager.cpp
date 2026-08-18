@@ -7,6 +7,9 @@
 #include "../managers/SoundManager.h"
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <functional>
+#include <sstream>
 
 namespace
 {
@@ -22,6 +25,35 @@ namespace
 		}
 		float distanceFromAxis = (std::min)(normalized, 90.0f - normalized);
 		return distanceFromAxis <= Constants::SUPPORT_SURFACE_MAX_TILT_DEGREES;
+	}
+
+	// [임시 디버그 로깅 — 지지 없이 얼어붙는 버그 재발 추적용] Sleep/Wake/ForceStabilize 전환이 일어날
+	// 때마다 어느 블록이 왜 그렇게 됐는지 physics_debug.log에 남긴다. 실행마다 이전 로그를 지우고 새로
+	// 시작한다(디스크에 남아있던 예전 로그와 섞이지 않도록). 버그가 재현 안 되는 채로 며칠 확인되면
+	// 이 로깅 블록(g_stepCounter/LogFreezeDebug/DescribeBlock 및 호출부)은 지워도 된다.
+	int g_stepCounter = 0;
+
+	void LogFreezeDebug(const std::string& message)
+	{
+		static bool isFirstWrite = true;
+		std::ofstream log("physics_debug.log", isFirstWrite ? std::ios::trunc : std::ios::app);
+		isFirstWrite = false;
+		if (log.is_open())
+		{
+			log << "[step " << g_stepCounter << "] " << message << "\n";
+		}
+	}
+
+	std::string DescribeBlock(Block* block)
+	{
+		Vector2 pos = block->GetRenderPosition();
+		std::ostringstream oss;
+		oss << "block=" << block
+			<< " pos=(" << pos.x << "," << pos.y << ")"
+			<< " v=" << std::sqrt(block->GetSpeedSquared())
+			<< " w=" << block->GetAngularVelocity()
+			<< " angle=" << block->GetAngle();
+		return oss.str();
 	}
 }
 
@@ -52,6 +84,8 @@ void PhysicsManager::Update(float deltaTime)
 
 void PhysicsManager::Step(float deltaTime)
 {
+    ++g_stepCounter;
+
     // 1. 상태 업데이트 및 중력 적용
     for (Block* block : BlockManager::GetInstance().GetAllBlocks())
     {
@@ -61,6 +95,7 @@ void PhysicsManager::Step(float deltaTime)
         if (!isAwake && !isToppling) continue;
 
         block->AdvanceActiveTimer(deltaTime);
+        block->AdvanceWakeTimer(deltaTime);
         ApplyGravity(block);
         block->Integrate(deltaTime);
     }
@@ -137,6 +172,43 @@ void PhysicsManager::Step(float deltaTime)
         }
     }
 
+    // 2.6. [Sleep->Awake 완충] 이유는 Constants.h의 WAKE_DAMPING_DURATION 주석 참고. 위 마찰 감쇠와
+    // 달리 뭔가에 닿아있는지와 무관하게, "갓 깨어났는지"만 본다 — 실제 있었던 폭주(두 블록이 서로
+    // 부딪히며 계속 속도가 붙던 경우)의 피해자들은 부딪히는 그 순간엔 아직 뭔가에 안정적으로 닿아있지
+    // 않았을 수 있어서다. Toppling이거나 불균형을 풀어가는 중이면 건드리지 않는다(GROUNDED_ANGULAR_DAMPING과
+    // 같은 이유 — 진짜 넘어지는/기우는 자연스러운 가속을 죽이면 안 된다).
+    // [연쇄 전파 감쇠 — "탄탄히 쌓인 탑에 착지 순간 먼 끝 블록이 갑자기 튀는" 버그 수정] 예전엔 모든
+    // 블록에 깊이와 무관하게 같은 세기(WAKE_DAMPING_FACTOR)로 한 번만 걸었다 — 그런데 Sleeping 블록이
+    // 촘촘히 맞닿아 있으면, 새로 떨어진 블록의 충격이 ResolveBlockCollisions의 솔버 반복(한 Step 안에
+    // COLLISION_SOLVER_ITERATIONS번) 동안 인접한 Sleeping 블록을 순서대로 깨우며 여러 칸을 연쇄로 타고
+    // 넘어갈 수 있는데, 접촉점 순차 처리 자체의 부정확성(PhysicsManager round 8/11)이 매 전달마다 조금씩
+    // 남긴 잔여 힘이 안 죽고 그대로 이어지면 사슬 맨 끝 블록에서 갑자기 눈에 띄게 "툭" 튀어나오는 것처럼
+    // 보인다. Block::GetWakeChainDepth()(원본 충격이면 0, 전달받아 깨울 때마다 +1)로 완충 세기를
+    // WAKE_DAMPING_FACTOR의 (깊이+1)제곱으로 걸어서, 연쇄가 한 단계씩 이어질 때마다 남는 힘이 기하급수적으로
+    // 줄게 한다 — 깊이 0(원본 충격)은 예전과 완전히 같은 세기 그대로다.
+    for (Block* block : BlockManager::GetInstance().GetAllBlocks())
+    {
+        bool isRecentlyAwake = block->GetPhysicsState() == PhysicsState::Awake &&
+            block->GetWakeTimer() < Constants::WAKE_DAMPING_DURATION &&
+            block->GetImbalanceTimer() <= 0.0f;
+        if (!isRecentlyAwake)
+        {
+            continue;
+        }
+
+        float chainDampingFactor = std::pow(Constants::WAKE_DAMPING_FACTOR, 1.0f + block->GetWakeChainDepth());
+        block->DampVelocity(chainDampingFactor);
+        block->DampAngularVelocity(chainDampingFactor);
+    }
+
+    // [댕글링 포인터 방지] RemoveToppledBlocks()는 반드시 BuildRestingChildrenMap()보다 먼저 실행돼야
+    // 한다. 화면 밖으로 나간 Toppling 블록을 여기서 먼저 지워야, 그 블록이 (지워지기 직전 순간의 낡은
+    // 스냅샷으로) restingChildren에 "누군가의 위에 얹힌 자식"으로 남아있다가 SettleToppledBlocks의
+    // AccumulateSupportedMass가 이미 해제된 포인터를 그대로 역참조하는 use-after-free를 막을 수 있다
+    // (예전엔 이 호출이 아래 ResolveBalance 루프 뒤, SettleToppledBlocks 바로 앞에 있어서 restingChildren이
+    // 삭제 전 스냅샷인 채로 재사용됐다).
+    RemoveToppledBlocks();
+
     // 3. 밸런스 체크 (Awake + Sleeping 블록 전부)
     // [연쇄 붕괴 사각지대] Sleeping 블록은 충돌 접촉이 있어야만 다시 깨어난다.
     // 그 사이 주변 블록이 밀리거나 무게가 옮겨가면서 뒤늦게 불안정해질 수 있는데, 그런 경우 아무도
@@ -145,27 +217,125 @@ void PhysicsManager::Step(float deltaTime)
     // 재사용한다 — 예전엔 블록마다(그리고 그 안에서 재귀할 때마다) 전체 블록을 매번 다시 스캔해서,
     // 탑이 커질수록 비용이 세제곱에 가깝게 늘어났다.
     RestingChildrenMap restingChildren = BuildRestingChildrenMap();
-    for (Block* block : BlockManager::GetInstance().GetAllBlocks())
+
+    // [지지대 우선 붕괴 — 실제로 빠져있던 로직을 뒤늦게 구현] ResolveBalance의 반환값(true=이번 프레임에
+    // 불균형으로 처리됨)은 "이 블록 위에 얹힌 모든 블록은 이번 프레임엔 따로 검사하지 않고 건너뛴다"는
+    // 뜻으로 설계되어 있었는데(ResolveBalance 선언부 주석 참고), 예전 코드는 이 반환값을 그냥 버려서
+    // 실제로는 탑의 모든 블록이 base가 이미 불안정 처리됐는지와 무관하게 매 프레임 각자 독립적으로
+    // 균형 판정을 받고 있었다 — "아래가 먼저 무너지고 위는 그 결과에 묻어간다"는 의도와 달리 여러 층이
+    // 같은 프레임에 동시에 제각각 넘어지기 시작할 수 있었다.
+    //
+    // [순서 문제] GetAllBlocks()가 주는 순서는 생성(스폰) 순서라 실제로 쌓인 순서와 무관하다 — 그대로
+    // 훑으면 자식이 부모(base)보다 먼저 처리되는 경우가 생겨서, base가 나중에 불안정 판정을 받아도 이미
+    // 처리해버린 자식에게는 스킵이 소급 적용되지 않는다. 그래서 restingChildren(base -> 자식)을 따라
+    // "누구 위에도 안 얹힌(=root)" 블록부터 시작해 자식 쪽으로 재귀하는 순서로 방문한다 — 그래야 base가
+    // 항상 자식보다 먼저 처리된다.
+    std::vector<Block*> hasBaseBelow;
+    for (const std::pair<Block* const, std::vector<std::pair<Block*, float>>>& baseEntry : restingChildren)
     {
-        PhysicsState state = block->GetPhysicsState();
-        if (state != PhysicsState::Awake && state != PhysicsState::Sleeping) continue;
-
-        ResolveBalance(block, deltaTime, restingChildren);
-
-        // ResolveBalance 외부적인 요인(충돌 등)으로 각도가 꺾인 경우의 안전장치.
-        // [절대각이 아니라 기준각 대비 — 실전에서 발견된 무한 진동 버그 수정] GetAngle()의 절대값이 아니라
-        // GetRestAngleReference()(마지막으로 안정 확인된 각도)에서 얼마나 더 돌았는지를 봐야 한다 — 안
-        // 그러면 90/135도로 완전히 넘어져서 옆으로 누운 채 정상적으로 안정된 블록도 절대각이 여전히
-        // 40도를 넘는다는 이유만으로 여기 계속 걸려서, SettleToppledBlocks가 Awake로 돌려보내자마자
-        // 바로 이 줄이 다시 Toppling으로 되돌리는 걸 매 프레임 무한 반복하며 제자리에서 떤다.
-        float angleFromRest = std::fabs(block->GetAngle() - block->GetRestAngleReference());
-        if (block->GetPhysicsState() != PhysicsState::Toppling && angleFromRest >= Constants::MAX_TOPPLE_ANGLE)
+        for (const std::pair<Block*, float>& childEntry : baseEntry.second)
         {
-            block->BeginToppling();
+            if (std::find(hasBaseBelow.begin(), hasBaseBelow.end(), childEntry.first) == hasBaseBelow.end())
+            {
+                hasBaseBelow.push_back(childEntry.first);
+            }
         }
     }
 
-    RemoveToppledBlocks();
+    std::vector<Block*> balanceVisited;
+
+    // current부터 시작해서 restingChildren을 따라 자식 쪽으로 재귀한다. forceSkip이 true면(이미 이번
+    // 프레임에 자신의 base 어딘가가 불안정 처리됐다는 뜻) ResolveBalance 자체를 호출하지 않고, 그 결과를
+    // 그대로 자식에게도 물려준다 — 한 번 스킵이 시작되면 그 위로는 전부 같이 스킵된다. Toppling 상태인
+    // 블록(current 자신이 pass-through 중일 수 있음)은 ResolveBalance/안전장치 대상이 아니지만, 그 위에
+    // 얹힌 자식들에게 도달하려면 재귀 자체는 계속돼야 하므로 자식 순회는 항상 한다. Step()의 절대각
+    // 안전장치는 스킵 여부와 무관하게 원래처럼 모든 Awake/Sleeping 블록에 그대로 적용한다 — ResolveBalance
+    // 캐스케이드와는 별개의 안전판이라서다.
+    std::function<void(Block*, bool)> resolveBalanceCascade = [&](Block* current, bool forceSkip)
+    {
+        if (std::find(balanceVisited.begin(), balanceVisited.end(), current) != balanceVisited.end())
+        {
+            return;
+        }
+        balanceVisited.push_back(current);
+
+        PhysicsState currentState = current->GetPhysicsState();
+        bool isEligible = currentState == PhysicsState::Awake || currentState == PhysicsState::Sleeping;
+        bool wasProcessed = false;
+
+        if (isEligible)
+        {
+            if (!forceSkip)
+            {
+                wasProcessed = ResolveBalance(current, deltaTime, restingChildren);
+            }
+
+            // ResolveBalance 외부적인 요인(충돌 등)으로 각도가 꺾인 경우의 안전장치.
+            // [절대각이 아니라 기준각 대비 — 실전에서 발견된 무한 진동 버그 수정] GetAngle()의 절대값이
+            // 아니라 GetRestAngleReference()(마지막으로 안정 확인된 각도)에서 얼마나 더 돌았는지를 봐야
+            // 한다 — 안 그러면 90/135도로 완전히 넘어져서 옆으로 누운 채 정상적으로 안정된 블록도 절대각이
+            // 여전히 40도를 넘는다는 이유만으로 여기 계속 걸려서, SettleToppledBlocks가 Awake로 돌려보내자
+            // 마자 바로 이 줄이 다시 Toppling으로 되돌리는 걸 매 프레임 무한 반복하며 제자리에서 떤다.
+            float angleFromRest = std::fabs(current->GetAngle() - current->GetRestAngleReference());
+            if (current->GetPhysicsState() != PhysicsState::Toppling && angleFromRest >= Constants::MAX_TOPPLE_ANGLE)
+            {
+                // [연쇄 붕괴 추적] 이 블록이 왜 넘어지기 시작했는지(첫 시작점)를 남긴다 — WAKE/SLEEP만으로는
+                // "이미 넘어지는 중인 블록이 뭔가를 침"만 보이고, 애초에 그 블록이 왜 넘어지기 시작했는지는
+                // 안 남아서 연쇄의 진짜 출발점을 못 찾는 문제가 있었다(실전 확인).
+                LogFreezeDebug("[TOPPLING] safety-net-angle " + DescribeBlock(current));
+                current->BeginToppling();
+            }
+        }
+
+        bool childForceSkip = forceSkip || wasProcessed;
+        auto childrenIt = restingChildren.find(current);
+        if (childrenIt != restingChildren.end())
+        {
+            for (const std::pair<Block*, float>& childEntry : childrenIt->second)
+            {
+                resolveBalanceCascade(childEntry.first, childForceSkip);
+            }
+        }
+    };
+
+    for (Block* block : BlockManager::GetInstance().GetAllBlocks())
+    {
+        // [순서 문제] 재귀의 시작점(root)은 "누구 위에도 얹혀있지 않은" 블록이면 되고, 그 자신의 상태는
+        // Awake/Sleeping/Toppling 어느 쪽이든 상관없다 — Toppling인 root라도 그 위에 얹힌 진짜 대상
+        // (Awake/Sleeping 자식)에 닿으려면 pass-through로라도 재귀를 시작해야 한다. Airborne만 애초에
+        // restingChildren 구성에서 제외되므로 여기서도 제외한다.
+        if (block->GetPhysicsState() == PhysicsState::Airborne)
+        {
+            continue;
+        }
+        bool isRoot = std::find(hasBaseBelow.begin(), hasBaseBelow.end(), block) == hasBaseBelow.end();
+        if (isRoot)
+        {
+            resolveBalanceCascade(block, false);
+        }
+    }
+
+    // [속도 폭주 방지 안전판] 이유는 Constants.h의 MAX_LINEAR_VELOCITY/MAX_ANGULAR_VELOCITY 주석 참고.
+    // 중력/충돌 임펄스/토크(위 1~3단계) 전부가 끝난 뒤, 이번 스텝의 최종 결과값에 한 번만 상한을 건다 —
+    // SettleToppledBlocks/TrySleepAll이 속도로 판단을 내리기 전에 걸려야 그쪽도 정상 범위를 본다.
+    for (Block* block : BlockManager::GetInstance().GetAllBlocks())
+    {
+        PhysicsState state = block->GetPhysicsState();
+        if (state != PhysicsState::Awake && state != PhysicsState::Toppling) continue;
+
+        float speed = std::sqrt(block->GetSpeedSquared());
+        if (speed > Constants::MAX_LINEAR_VELOCITY)
+        {
+            block->DampVelocity(Constants::MAX_LINEAR_VELOCITY / speed);
+        }
+
+        float angularSpeed = std::fabs(block->GetAngularVelocity());
+        if (angularSpeed > Constants::MAX_ANGULAR_VELOCITY)
+        {
+            block->DampAngularVelocity(Constants::MAX_ANGULAR_VELOCITY / angularSpeed);
+        }
+    }
+
     SettleToppledBlocks(restingChildren);
     TrySleepAll(deltaTime);
 }
@@ -226,13 +396,32 @@ void PhysicsManager::ResolveBlockPairCollision(Block* block, Block* other, bool 
 
     if (blockMovable && blockIsRealImpact && other->GetPhysicsState() == PhysicsState::Sleeping)
     {
+        // [연쇄 붕괴 추적] 깨어나는 쪽(other)뿐 아니라 때린 쪽(block, impactor)도 같이 남긴다 —
+        // 안 그러면 "누가 이 연쇄를 시작했는지" 로그만으로는 추적이 안 된다(실전에서 필요성 확인).
+        LogFreezeDebug("[WAKE] impact victim=(" + DescribeBlock(other) + ") impactor=(" + DescribeBlock(block) + ")");
         other->WakeUp();
+        // [Sleep->Awake 완충 — 연쇄 전파 감쇠, Block::GetWakeChainDepth 주석 참고] 때린 쪽(block)의
+        // 연쇄 깊이를 그대로 물려받아 +1 한다 — block 자신도 이미 연쇄로 충격을 전달받은 상태였다면
+        // (GetWakeChainDepth() > 0), other는 그보다 한 단계 더 깊은 곳에서 깨어난 것이므로 Step() 2.6
+        // 단계에서 더 강한 완충을 받는다. block이 진짜 원본 충격원(깊이 0)이면 other는 깊이 1이 되어
+        // 예전과 동일한(WAKE_DAMPING_FACTOR 그대로) 완충을 받는다 — 즉 연쇄가 없던 기존 동작과 호환된다.
+        other->SetWakeChainDepth(block->GetWakeChainDepth() + 1);
         otherMovable = true; // 이제 other도 움직일 수 있게 되었으므로 true로 바꿔줌
     }
     else if (otherMovable && otherIsRealImpact && block->GetPhysicsState() == PhysicsState::Sleeping)
     {
+        LogFreezeDebug("[WAKE] impact victim=(" + DescribeBlock(block) + ") impactor=(" + DescribeBlock(other) + ")");
         block->WakeUp();
+        block->SetWakeChainDepth(other->GetWakeChainDepth() + 1);
         blockMovable = true; // 이제 block도 움직일 수 있게 되었으므로 true로 바꿔줌
+    }
+    else if (blockMovable && otherMovable && (blockIsRealImpact || otherIsRealImpact))
+    {
+        // [이미 Awake끼리의 고속 충돌 추적 — 실전에서 필요성 확인] 위 두 분기는 "Sleeping 쪽을 깨우는"
+        // 경우만 남긴다. 그런데 둘 다 이미 Awake/Toppling인 상태에서 격렬하게 부딪히는 경우(예: 넘어지는
+        // 블록이 이미 움직이던 다른 블록을 침)는 깨울 필요가 없어서 여태 전혀 로그가 안 남았다 — 그래서
+        // 갑자기 v=600대의 큰 값이 로그에 나타나도 누가/왜 쳤는지 추적할 방법이 없었다.
+        LogFreezeDebug("[COLLISION] fast-awake a=(" + DescribeBlock(block) + ") b=(" + DescribeBlock(other) + ")");
     }
 
     // [붕괴 충돌음] 둘 중 하나가 무게중심이 무너져 회전+낙하 이탈 중인 상태(Toppling)이고, 그 블록이
@@ -458,6 +647,17 @@ bool PhysicsManager::GetCellSupportRange(Block* block, int cellIndex, float& out
         return true;
     }
 
+    // [분리된 두 지지대 유니온 — IsCellSupported/RaycastDownForSupport와 기준 통일] 이 칸이 서로 다른
+    // 두 블록 위에 나뉘어 걸쳐 있을 수 있다(예: 가운데는 허공이고 양 끝만 각각 다른 블록에 걸친 경우) —
+    // IsCellSupported/RaycastDownForSupport는 왼쪽/가운데/오른쪽 3점 레이캐스트로 이런 경우까지 "지지
+    // 있음"으로 정확히 잡아내는데, 여기는 예전에 "처음 찾은 지지 제공자 하나"만 보고 그 즉시 반환해서
+    // 반대쪽에 실제로 있는 두 번째 지지대를 무시했다 — 그러면 실제보다 지지 범위가 좁게 잡혀서 무게중심이
+    // (진짜로는 양쪽 다 지지되는데도) 범위 밖으로 판정되는 오탐 불균형이 생길 수 있었다. 이제 겹치는
+    // 지지 제공자를 전부 찾아서 그 클리핑된 범위들의 합집합(가장 왼쪽 min ~ 가장 오른쪽 max)을 돌려준다.
+    bool hasBlockSupport = false;
+    float blockSupportMinX = 0.0f;
+    float blockSupportMaxX = 0.0f;
+
     for (Block* other : BlockManager::GetInstance().GetAllBlocks())
     {
         // Toppling(무너져서 낙하 중)인 블럭은 그 자체가 안 안정적인 상태라, 다른 블럭이 그 위에
@@ -501,12 +701,29 @@ bool PhysicsManager::GetCellSupportRange(Block* block, int cellIndex, float& out
 
             if (overlapsOther && isRestingOnOther)
             {
-                // [경계값 버그 2] 위 바닥 케이스와 같은 이유로, 아래 블록과 실제로 겹치는 부분만 돌려준다.
-                outSupportMinX = (std::max)(cellMinX, otherMinX);
-                outSupportMaxX = (std::min)(cellMaxX, otherMaxX);
-                return true;
+                // [경계값 버그 2] 위 바닥 케이스와 같은 이유로, 아래 블록과 실제로 겹치는 부분만 반영한다.
+                float clippedMinX = (std::max)(cellMinX, otherMinX);
+                float clippedMaxX = (std::min)(cellMaxX, otherMaxX);
+                if (!hasBlockSupport)
+                {
+                    blockSupportMinX = clippedMinX;
+                    blockSupportMaxX = clippedMaxX;
+                    hasBlockSupport = true;
+                }
+                else
+                {
+                    if (clippedMinX < blockSupportMinX) blockSupportMinX = clippedMinX;
+                    if (clippedMaxX > blockSupportMaxX) blockSupportMaxX = clippedMaxX;
+                }
             }
         }
+    }
+
+    if (hasBlockSupport)
+    {
+        outSupportMinX = blockSupportMinX;
+        outSupportMaxX = blockSupportMaxX;
+        return true;
     }
 
     return false;
@@ -532,9 +749,17 @@ bool PhysicsManager::IsCellTouchingAnySupport(Block* block, int cellIndex) const
 
     for (Block* other : BlockManager::GetInstance().GetAllBlocks())
     {
+        // [지지 없이 얼어붙는 버그 수정 — GetCellSupportRange와 기준 통일] 여기 IsNearAxisAlignedAngle
+        // 조건이 빠져있으면, 5도 넘게 기운(예: 넘어지다 만) 블럭에 살짝 닿기만 해도 "마찰상으로는 닿음"
+        // 판정을 받는다. 그런데 GetCellSupportRange(공식 지지 판정, Sleep/Wake을 결정)는 이미 이 조건으로
+        // 그런 블럭을 지지 제공자에서 제외하므로, 위에 얹힌 블럭은 "공식적으로는 지지 없음"이라 매 스텝
+        // ResolveBalance가 깨우려고 하는데, 동시에 이 느슨한 판정만으로 걸리는 마찰 감쇠(DampVelocity)와
+        // 충돌 반응이 매 프레임 속도를 죽여서 실제로는 안 떨어지고 그 자리에 붙박인다 — "지지가 없다고
+        // 판정되는데도 얼어붙는" 증상의 원인이었다. 두 판정이 같은 기준(축 정렬 5도 이내)을 써야 한다.
         bool otherCanSupport = other != block &&
             other->GetPhysicsState() != PhysicsState::Airborne &&
-            other->GetPhysicsState() != PhysicsState::Toppling;
+            other->GetPhysicsState() != PhysicsState::Toppling &&
+            IsNearAxisAlignedAngle(other->GetAngle());
         if (!otherCanSupport)
         {
             continue;
@@ -564,16 +789,16 @@ bool PhysicsManager::IsCellTouchingAnySupport(Block* block, int cellIndex) const
     return false;
 }
 
-int PhysicsManager::CountCellsRestingOnBlock(Block* upper, Block* lower) const
+float PhysicsManager::CountCellsRestingOnBlock(Block* upper, Block* lower) const
 {
     // [성능] BuildRestingChildrenMap이 모든 블록 쌍(n²)에 대해 이 함수를 부르므로, 명백히 멀리 떨어진
     // 쌍은 칸 단위 모서리 계산 없이 블록 원점 Y거리만으로 먼저 걸러낸다 (IsCellSupported와 같은 이유)
     if (std::fabs(upper->GetRenderPosition().y - lower->GetRenderPosition().y) > Constants::SUPPORT_BROADPHASE_MAX_BLOCK_EXTENT)
     {
-        return 0;
+        return 0.0f;
     }
 
-    int restingCellCount = 0;
+    float restingOverlapWidth = 0.0f;
 
     for (int i = 0; i < upper->GetCellCount(); ++i)
     {
@@ -597,13 +822,16 @@ int PhysicsManager::CountCellsRestingOnBlock(Block* upper, Block* lower) const
 
             if (overlapsLower && isRestingOnLower)
             {
-                ++restingCellCount;
+                // [분배 정밀화 — 칸 개수 대신 겹친 폭] 예전엔 여기서 개수만 1 늘렸는데, 그러면 살짝
+                // 걸친 칸과 꽉 찬 칸이 무게 분배에서 똑같이 취급됐다. 실제로 겹친 X폭만큼만 더해서
+                // 걸친 정도에 비례해 무게가 나뉘게 한다.
+                restingOverlapWidth += (std::min)(cellMaxX, lowerMaxX) - (std::max)(cellMinX, lowerMinX);
                 break; // 이 upper 칸은 이미 lower 위에 얹힌 걸로 셌으니, lower의 다른 칸과 또 겹쳐도 중복 세지 않는다
             }
         }
     }
 
-    return restingCellCount;
+    return restingOverlapWidth;
 }
 
 PhysicsManager::RestingChildrenMap PhysicsManager::BuildRestingChildrenMap() const
@@ -626,10 +854,12 @@ PhysicsManager::RestingChildrenMap PhysicsManager::BuildRestingChildrenMap() con
         // 한 칸씩). 예전엔 "얹혀 있는지"만 boolean으로 봐서, 걸친 base 각각에 child의 무게 전체를
         // 그대로 등록했다 — 그러면 각 base가 "내가 child 전체 무게를 다 받친다"고 중복 계산해서,
         // 실제로는 두 base가 나눠 받쳐 충분히 안정적인 구조도 양쪽 다 불안정으로 오판했다. 여기서
-        // child가 각 base 위에 몇 칸씩 얹혀 있는지 먼저 다 세서, 총 지지 칸 수 대비 비율만큼만
+        // child가 각 base와 얼마나 겹쳐 얹혀 있는지(겹친 폭) 먼저 다 재서, 총 겹친 폭 대비 비율만큼만
         // 그 base에 무게를 배분한다.
-        std::vector<std::pair<Block*, int>> basesWithCellCount;
-        int totalRestingCells = 0;
+        // [분배 정밀화] 칸 개수 대신 폭을 쓰는 이유는 CountCellsRestingOnBlock 주석 참고 — 살짝
+        // 걸친 base가 넓게 걸친 base와 똑같이 취급되던 문제를 없앤다.
+        std::vector<std::pair<Block*, float>> basesWithOverlapWidth;
+        float totalRestingWidth = 0.0f;
         for (Block* base : allBlocks)
         {
             if (base == child)
@@ -637,17 +867,17 @@ PhysicsManager::RestingChildrenMap PhysicsManager::BuildRestingChildrenMap() con
                 continue;
             }
 
-            int cellCount = CountCellsRestingOnBlock(child, base);
-            if (cellCount > 0)
+            float overlapWidth = CountCellsRestingOnBlock(child, base);
+            if (overlapWidth > 0.0f)
             {
-                basesWithCellCount.push_back({ base, cellCount });
-                totalRestingCells += cellCount;
+                basesWithOverlapWidth.push_back({ base, overlapWidth });
+                totalRestingWidth += overlapWidth;
             }
         }
 
-        for (const std::pair<Block*, int>& entry : basesWithCellCount)
+        for (const std::pair<Block*, float>& entry : basesWithOverlapWidth)
         {
-            float weightFraction = static_cast<float>(entry.second) / static_cast<float>(totalRestingCells);
+            float weightFraction = entry.second / totalRestingWidth;
             childrenOf[entry.first].push_back({ child, weightFraction });
         }
     }
@@ -690,7 +920,7 @@ void PhysicsManager::AccumulateSupportedMass(Block* base, float weightFraction, 
     }
 }
 
-bool PhysicsManager::ComputeSupportDebugInfo(Block* block, const RestingChildrenMap& childrenOf, float& outMinX, float& outMaxX, float& outCombinedComX) const
+bool PhysicsManager::ComputeSupportDebugInfo(Block* block, const RestingChildrenMap& childrenOf, float& outMinX, float& outMaxX, float& outCombinedComX, float& outCombinedMass) const
 {
     bool hasSupport = false;
 
@@ -731,6 +961,7 @@ bool PhysicsManager::ComputeSupportDebugInfo(Block* block, const RestingChildren
     float weightedX = 0.0f;
     AccumulateSupportedMass(block, 1.0f, visited, childrenOf, totalMass, weightedX);
     outCombinedComX = weightedX / totalMass;
+    outCombinedMass = totalMass;
     return true;
 }
 
@@ -739,17 +970,34 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const Resting
     float supportMinX = 0.0f;
     float supportMaxX = 0.0f;
     float centerOfMassX = 0.0f;
+    float combinedMass = 0.0f;
 
-    if (!ComputeSupportDebugInfo(block, childrenOf, supportMinX, supportMaxX, centerOfMassX))
+    if (!ComputeSupportDebugInfo(block, childrenOf, supportMinX, supportMaxX, centerOfMassX, combinedMass))
     {
 		if (block->GetPhysicsState() == PhysicsState::Sleeping)
 		{
+			LogFreezeDebug("[WAKE] no-support " + DescribeBlock(block));
 			block->WakeUp();
 		}
+		else if (block->GetSpeedSquared() < Constants::SLEEP_LINEAR_THRESHOLD * Constants::SLEEP_LINEAR_THRESHOLD
+			&& g_stepCounter % 60 == 0)
+		{
+			// [안전망] Awake인데 공식 지지는 없고 속도까지 낮은 상태가 계속되면(대략 1초에 한 번씩만 기록,
+			// 스팸 방지) — 자유낙하라면 곧 속도가 붙어야 정상이라, 이게 반복해서 찍히면 뭔가(예: 아직
+			// 못 잡은 다른 마찰/충돌 경로)가 계속 붙잡고 있다는 뜻이다.
+			LogFreezeDebug("[STUCK?] awake-no-support-low-speed " + DescribeBlock(block));
+		}
 
-        // 지지 자체가 없는 건 "지지는 있는데 균형이 깨짐"과는 다른 상황(자유낙하)이라, 끼임 판정과는
-        // 무관하다 — 나중에 착지해서 다시 지지가 생기면 완전히 새 시도로 취급되게 초기화해둔다.
-        block->ResetImbalanceTimer();
+        // [지지 flicker로 영원히 안 풀리는 불균형 버그 수정 — 실전 로그로 확인됨] 여기서 예전처럼
+        // ResetImbalanceTimer()로 즉시 0을 만들면 안 된다 — 세게 부딪혀 각속도가 큰 블록은 흔들리는
+        // 도중 회전된 모서리가 SUPPORT_CHECK_TOLERANCE 판정 창을 한두 프레임만 살짝 벗어나도 여기로
+        // 들어오는데, 매번 타이머를 통째로 날리면 TOPPLE_STUCK_TIMEOUT(3초)까지 절대 못 쌓여서
+        // [IMBALANCE-START]만 몇 초 넘게 계속 재시작하며 제자리에서 계속 흔들리기만 한다(physics_debug.log에서
+        // L자 블록이 9초 넘게 이 패턴으로 멈추지도 넘어지지도 않는 것으로 확인됨). DecayImbalanceTimer와
+        // 같은 이유(선언부 주석 참고)로 여기도 이 프레임 분(deltaTime)만 깎는다 — 진짜 자유낙하처럼 여러
+        // 프레임 연속으로 지지가 없으면 어차피 쌓인 시간만큼 서서히 깎여 결국 0에 도달해 똑같이 리셋되고,
+        // 한두 프레임짜리 순간 flicker는 누적 시간을 거의 잃지 않는다.
+        block->DecayImbalanceTimer(deltaTime);
 
         return false;
     }
@@ -770,9 +1018,12 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const Resting
 
     if (!isImbalanced)
     {
-        // 균형이 돌아왔으면 불균형 지속시간과 "끼임" 표시를 같이 초기화한다 — 다음에 다시 불균형이
-        // 감지되면 완전히 새 시도로 취급한다.
-        block->ResetImbalanceTimer();
+        // [불균형 깜빡임 방지] 여기서 곧바로 ResetImbalanceTimer()로 완전히 0을 만들면 안 된다 — 경계선
+        // 근처에서 무게중심이 한두 프레임만 안쪽으로 들어왔다 나가는 "깜빡임"에도 매번 완전히 리셋되면,
+        // 실제로는 몇 초째 제자리인 블록도 TOPPLE_STUCK_TIMEOUT이 연속 3초를 못 채워서 끼임을 영원히
+        // 못 잡는다(DecayImbalanceTimer 선언부 주석 참고, 실전 확인). 진짜로 오래 안정되면 자연히
+        // 0 밑으로 내려가 결국 똑같이 리셋된다.
+        block->DecayImbalanceTimer(deltaTime);
         return false;
     }
 
@@ -798,6 +1049,17 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const Resting
     // 그 흔들림 방향 그대로 가속돼버린다(I자 블록이 반대로 넘어가는 것으로 확인됨). 그래서 pivot은
     // 에피소드가 시작되는 이 한 프레임에만 새로 계산하고, 이후로는 각도가 얼마나 돌든 같은 pivot을 쓴다.
     bool isNewImbalanceEpisode = block->GetImbalanceTimer() <= 0.0f;
+    if (isNewImbalanceEpisode)
+    {
+        // [불균형 시작점 추적 — 실전에서 필요성 확인] "지지는 있는데 무게중심이 범위를 벗어남"이 처음
+        // 감지된 이 프레임을 남긴다. 이게 없으면, MAX_TOPPLE_ANGLE을 넘거나 다른 사건(충돌 등)에 우연히
+        // 걸릴 때까지 매 프레임 조용히 토크만 쌓여서, 나중에 로그를 봐도 "왜 이미 이만큼(예: 18도)
+        // 기울어진 채로 나타났는지" 그 시작 원인을 설명할 수가 없었다.
+        std::ostringstream oss;
+        oss << "supportRange=[" << supportMinX << "," << supportMaxX << "] centerOfMassX=" << centerOfMassX
+            << " combinedMass=" << combinedMass;
+        LogFreezeDebug("[IMBALANCE-START] " + oss.str() + " " + DescribeBlock(block));
+    }
     block->AdvanceImbalanceTimer(deltaTime);
 
     // [잠든 채로 토크만 쌓이는 것 방지] Sleeping 블럭은 Step() 1단계(Integrate)를 안 타서 m_angle이
@@ -805,7 +1067,26 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const Resting
     // 안 보이는 채로 계속 쌓이다가, 나중에 뭔가(충돌 등) 딴 이유로 깨어나는 순간 그 쌓인 각속도가
     // 한꺼번에 반영되며 또 "휙" 튀어버린다. 불균형을 감지한 그 즉시 깨워서, 다음 프레임부터 Integrate가
     // 실제로 돌게 한다.
-    if (block->GetPhysicsState() == PhysicsState::Sleeping)
+    bool wasSleeping = block->GetPhysicsState() == PhysicsState::Sleeping;
+
+    // [Sleep 직후 즉시 재불안정 반복 방지 — 실전에서 발견된 무한 루프 버그] 결합 무게중심이 지지 범위
+    // 경계선에 거의 정확히 걸친 "칼날 위 균형"에서는, 매번 정상적으로 Sleep까지 갔다가 Sleep()의 각도/
+    // 위치 스냅이 그 경계를 살짝 다시 넘겨서 곧바로 새 에피소드가 시작되는 게 반복될 수 있다(m_imbalanceTimer
+    // decay는 "같은 에피소드 안의 깜빡임"만 막아서 이 경우엔 무력함 — 매번 진짜로 Sleep을 완주하기
+    // 때문). Sleeping에서 막 나온 블록이 새 에피소드를 이만큼 연속으로 시작하면, 그 미세한 잔여 기울기를
+    // 그대로 받아들이고 더 재시도하지 않는다.
+    if (isNewImbalanceEpisode && wasSleeping)
+    {
+        block->AdvanceSleepReawakenCount();
+        if (block->GetSleepReawakenCount() >= Constants::MAX_SLEEP_REAWAKEN_COUNT)
+        {
+            LogFreezeDebug("[FORCESTABILIZE] sleep-reawaken-loop " + DescribeBlock(block));
+            block->ForceStabilize();
+            return true;
+        }
+    }
+
+    if (wasSleeping)
     {
         block->WakeUp();
     }
@@ -898,7 +1179,7 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const Resting
         pivot = block->GetImbalancePivot();
     }
 
-    block->ApplyGravityTorque(pivot, deltaTime);
+    block->ApplyGravityTorque(pivot, centerOfMassX, combinedMass, deltaTime);
 
     // [연쇄 붕괴 전파] block 하나만 넘어뜨린다. block이 떠받치던 덩어리 전체에 같은 각속도를 강제로
     // 주지 않는다 — 블록마다 무게중심/관성모멘트가 달라서 같은 각속도를 받아도 다르게 움직여야
@@ -916,10 +1197,12 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const Resting
         // 아니어도 그 자리에서 강제로 멈춰서 무한 반복을 끊는다.
         if (block->GetConsecutiveToppleCount() >= Constants::MAX_CONSECUTIVE_TOPPLE_COUNT)
         {
+            LogFreezeDebug("[FORCESTABILIZE] max-consecutive-topple " + DescribeBlock(block));
             block->ForceStabilize();
         }
         else
         {
+            LogFreezeDebug("[TOPPLING] imbalance " + DescribeBlock(block));
             block->BeginToppling();
         }
     }
@@ -928,49 +1211,21 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const Resting
         // [끼임 판정] 계속 불균형인데도 이만큼(3초) 시간 동안 MAX_TOPPLE_ANGLE을 못 넘었으면, 옆
         // 블록이나 바닥 모서리에 진짜로 끼여서 더는 못 넘어가는 것으로 보고 강제로 멈춘다. "포기" 표시는
         // ForceStabilize() 내부에서 일괄 처리한다(어느 호출 경로에서 왔든 동일하게 적용되도록).
-        block->ForceStabilize();
-    }
-
-    return true;
-}
-
-bool PhysicsManager::CheckGlobalStability() const
-{
-    // Toppling(무너져서 이탈 중)인 블럭은 일부러 검사하지 않는다 — 무너지는 조각 하나 때문에 이미
-    // 안정적인 나머지 블럭들까지 계속 깨어있게 붙잡아두면, 그 사이 다른 곳에서도 자잘한 흔들림이
-    // 누적될 기회가 생겨서 "그 부분만 무너짐"이 아니라 "탑 전체가 무너짐"처럼 보이게 된다
-    // Awake 블럭 중 하나라도 너무 빠르게 움직이거나(직선) 너무 빠르게 돌면(회전) 불안정으로 판단
-    for (Block* block : BlockManager::GetInstance().GetAllBlocks())
-    {
-        if (block->GetPhysicsState() != PhysicsState::Awake)
+        // [오뚜기처럼 도로 일어서는 버그 수정 — SettleToppledBlocks와 같은 안전장치 필요] 이 아래
+        // SettleToppledBlocks의 같은 목적 체크(끼임 판정)는 "3초가 지났다"만으로 판단하지 않고
+        // hasStoppedMoving(실제로 지금 거의 안 움직이는지)까지 같이 봐야 한다는 걸 이미 겪어서 알고 있다
+        // (해당 주석 참고) — 그런데 여기(넘어지기 *전* 단계)엔 그 가드가 빠져있었다. 지렛대가 아직 짧아
+        // 토크가 작은 초반엔 무게중심이 살짝만(예: 9도) 기운 채로 아주 천천히 계속 가속 중일 수 있는데,
+        // 그것도 "3초 동안 40도를 못 넘었다"는 이유만으로 여기 걸려 강제로 멈춰버렸다. 그 상태로
+        // Sleep()이 각도 스냅(90도 배수 12도 이내면 반올림)까지 적용해버리면, 아직 진행 중이던 미세한
+        // 기울기가 한 프레임 만에 0도로 확 되돌아가 "오뚜기처럼 벌떡 일어나는" 것처럼 보인다. 실제로
+        // 각속도가 이미 거의 0(=진짜로 못 넘어가고 멈춘 상태)일 때만 끼임으로 확정한다.
+        bool hasStoppedMoving = block->GetSpeedSquared() < Constants::SLEEP_LINEAR_THRESHOLD * Constants::SLEEP_LINEAR_THRESHOLD &&
+            std::fabs(block->GetAngularVelocity()) < Constants::SLEEP_ANGULAR_THRESHOLD;
+        if (hasStoppedMoving)
         {
-            continue;
-        }
-
-        bool tooFast = block->GetSpeedSquared() > Constants::UNSTABLE_SPEED_THRESHOLD * Constants::UNSTABLE_SPEED_THRESHOLD;
-        bool spinningTooFast = std::fabs(block->GetAngularVelocity()) > Constants::UNSTABLE_ANGULAR_SPEED_THRESHOLD;
-
-        if (tooFast || spinningTooFast)
-        {
-            return false;
-        }
-
-        // [자유낙하 오판 방지] 막 Land()됐거나 지지를 잃은 블럭은 중력을 받기 시작한 첫 프레임엔
-        // 속도가 거의 0이라(가속이 막 시작됐으니) 위 속도 검사를 통과해버린다. 지지대가 전혀 없는데도
-        // "안정적"이라고 오판해서 재워버리면, Sleeping은 중력 계산에서 아예 빠지니까 그 자리에
-        // 영원히 멈춰(공중에 뜬 채로) 버린다 — 지지대가 없으면 무조건 아직 불안정한 것으로 본다
-        bool hasSupport = false;
-        for (int i = 0; i < block->GetCellCount() && !hasSupport; ++i)
-        {
-            if (IsCellSupported(block, i))
-            {
-                hasSupport = true;
-            }
-        }
-
-        if (!hasSupport)
-        {
-            return false;
+            LogFreezeDebug("[FORCESTABILIZE] topple-stuck-timeout " + DescribeBlock(block));
+            block->ForceStabilize();
         }
     }
 
@@ -1049,7 +1304,8 @@ void PhysicsManager::SettleToppledBlocks(const RestingChildrenMap& childrenOf)
         float supportMinX = 0.0f;
         float supportMaxX = 0.0f;
         float centerOfMassX = 0.0f;
-        if (!ComputeSupportDebugInfo(block, childrenOf, supportMinX, supportMaxX, centerOfMassX))
+        float unusedCombinedMass = 0.0f;
+        if (!ComputeSupportDebugInfo(block, childrenOf, supportMinX, supportMaxX, centerOfMassX, unusedCombinedMass))
         {
             continue;
         }
@@ -1082,6 +1338,7 @@ void PhysicsManager::SettleToppledBlocks(const RestingChildrenMap& childrenOf)
             std::fabs(block->GetAngularVelocity()) < Constants::SLEEP_ANGULAR_THRESHOLD;
         if (block->GetActiveTimer() >= Constants::TOPPLE_STUCK_TIMEOUT && hasStoppedMoving)
         {
+            LogFreezeDebug("[FORCESTABILIZE] settle-stuck-timeout " + DescribeBlock(block));
             block->ForceStabilize();
         }
     }
@@ -1133,6 +1390,7 @@ void PhysicsManager::TrySleepAll(float deltaTime)
             // FORCE_SLEEP_TIMEOUT을 넘으면 속도와 무관하게 강제로 안정화한다.
             if (hasSupport && block->GetActiveTimer() >= Constants::FORCE_SLEEP_TIMEOUT)
             {
+                LogFreezeDebug("[FORCESTABILIZE] force-sleep-timeout " + DescribeBlock(block));
                 block->ForceStabilize();
             }
 
@@ -1145,6 +1403,7 @@ void PhysicsManager::TrySleepAll(float deltaTime)
         {
             // [무한 재넘어짐 방지] 여기가 "진짜로 안정돼서 스스로 잠들었다"고 확인된 유일한 경로다
             // (지지대 있음 + 저속 상태가 SLEEP_DELAY 동안 유지됨) — 재넘어짐 카운트를 여기서만 리셋한다.
+            LogFreezeDebug("[SLEEP] rest-timer " + DescribeBlock(block));
             block->ResetConsecutiveToppleCount();
             block->Sleep();
         }

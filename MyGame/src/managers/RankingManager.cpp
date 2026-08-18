@@ -162,18 +162,19 @@ void RankingManager::Init(const std::string& databaseUrl)
     }
 }
 
-void RankingManager::SubmitScore(const std::string& name, float heightMeters)
+void RankingManager::SubmitScore(const std::string& deviceId, const std::string& name, float heightMeters)
 {
-    // 닉네임을 그대로 Firebase 키로 써서 PUT하면, 같은 닉네임으로 다시 등록할 때 자동으로
-    // 이전 값을 덮어쓴다(한 닉네임당 기록 하나만 남음). 덮어쓰기 전에 먼저 그 닉네임의 기존
+    // deviceId를 그대로 Firebase 키로 써서 PUT하면, 같은 컴퓨터에서 다시 등록할 때 자동으로
+    // 이전 값을 덮어쓴다(한 컴퓨터당 기록 하나만 남음) — 닉네임을 키로 쓰지 않으므로 서로 다른
+    // 컴퓨터가 같은 닉네임을 써도 충돌하지 않는다. 덮어쓰기 전에 먼저 이 컴퓨터의 기존
     // 최고기록을 조회해서, 이번 점수가 그보다 높을 때만 실제로 PUT한다 — "매번 등록"이 아니라
     // "자기 최고기록 갱신했을 때만 등록"이 되게 하려는 것.
     std::wstring host = m_host;
 
-    std::thread([host, name, heightMeters]()
+    std::thread([host, deviceId, name, heightMeters]()
     {
-        std::wstring wideName(name.begin(), name.end());
-        std::wstring path = L"/rankings/" + wideName + L".json";
+        std::wstring wideDeviceId(deviceId.begin(), deviceId.end());
+        std::wstring path = L"/rankings/" + wideDeviceId + L".json";
 
         std::string existingBody = SendJsonRequest(host, path, L"GET", "");
         float bestScore = ParseScoreField(existingBody);
