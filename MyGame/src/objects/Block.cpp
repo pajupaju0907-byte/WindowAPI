@@ -8,6 +8,7 @@
 #include "../util/Constants.h"
 #include "../util/MathUtil.h"
 #include <cmath>
+#include <sstream>
 
 namespace
 {
@@ -31,25 +32,36 @@ namespace
 Block::Block() = default;
 Block::~Block() = default;
 
+float Block::GetCellSize() const
+{
+	return Constants::TILE_SIZE;
+}
+
 bool Block::CanOccupy(int originGridX, int originGridY) const
 {
+	// [칸 크기 가변 대응] 보통 칸 하나(테트리스 칸 단위 1)는 GRID_SUBCELL_SCALE(2) 서브셀 = TILE_SIZE다.
+	// GetCellSize()가 TILE_SIZE보다 큰 파생 클래스(예: GiantTetrominoBlock)는 칸 하나가 서브셀을 더
+	// 많이 차지하므로, 그 비율만큼 서브셀 폭도 같이 늘려서 위치 변환/경계 검사가 실제 픽셀 크기와
+	// 어긋나지 않게 한다.
+	int cellSpanSubcells = static_cast<int>(std::lround(GetCellSize() / Constants::SUBCELL_SIZE));
+
 	for (int i = 0; i < CELL_COUNT; ++i)
 	{
-		int cellSubCellX = originGridX + static_cast<int>(m_cellShape[i].x) * Constants::GRID_SUBCELL_SCALE;
-		int cellSubCellY = originGridY + static_cast<int>(m_cellShape[i].y) * Constants::GRID_SUBCELL_SCALE;
+		int cellSubCellX = originGridX + static_cast<int>(m_cellShape[i].x) * cellSpanSubcells;
+		int cellSubCellY = originGridY + static_cast<int>(m_cellShape[i].y) * cellSpanSubcells;
 
 		// 가로 범위와 바닥 쪽 하한선(GRID_HEIGHT_SUBCELLS)은 그대로 막되, 위쪽(y가 작아지는 방향)은
 		// 일부러 제한을 두지 않는다 — 카메라가 계속 따라 올라가며 탑이 원래 창 높이 위로도 끝없이 쌓일 수
 		// 있어야 하기 때문. GridManager는 이 판정에 관여하지 않아서(다른 블럭과의 실제 좌표 SAT 비교로
 		// 충돌을 막기 때문에) 이 한 줄만 풀어도 안전하다.
-		if (cellSubCellX < 0 || cellSubCellX + Constants::GRID_SUBCELL_SCALE > Constants::GRID_WIDTH_SUBCELLS ||
-			cellSubCellY + Constants::GRID_SUBCELL_SCALE > Constants::GRID_HEIGHT_SUBCELLS)
+		if (cellSubCellX < 0 || cellSubCellX + cellSpanSubcells > Constants::GRID_WIDTH_SUBCELLS ||
+			cellSubCellY + cellSpanSubcells > Constants::GRID_HEIGHT_SUBCELLS)
 		{
 			return false;
 		}
 
 		Vector2 cellMin = { cellSubCellX * Constants::SUBCELL_SIZE, cellSubCellY * Constants::SUBCELL_SIZE };
-		Vector2 cellMax = { cellMin.x + Constants::TILE_SIZE, cellMin.y + Constants::TILE_SIZE };
+		Vector2 cellMax = { cellMin.x + GetCellSize(), cellMin.y + GetCellSize() };
 
 		// 바닥(발판) 범위와 겹치면 막힘 — Constants::FLOOR_LEFT_X/RIGHT_X/TOP_Y를 직접 본다
 		bool overlapsFloor = cellMax.y > Constants::FLOOR_TOP_Y &&
@@ -87,6 +99,16 @@ bool Block::CanOccupy(int originGridX, int originGridY) const
 
 				if (TestOBBCollision(candidateCorners, otherCorners).collided)
 				{
+					if (this->GetPhysicsState() == PhysicsState::Airborne && std::fabs(other->GetAngle()) > 0.5f)
+					{
+						std::ostringstream oss;
+						oss << "[GRID-BLOCKED] this=" << this << " blockedBy=" << other
+							<< " otherAngle=" << other->GetAngle()
+							<< " otherPos=(" << other->GetRenderPosition().x << "," << other->GetRenderPosition().y << ")"
+							<< " candidateOrigin=(" << originGridX << "," << originGridY << ")"
+							<< " cellIndex=" << i;
+						PhysicsManager::LogDebug(oss.str());
+					}
 					return false;
 				}
 			}
@@ -195,7 +217,7 @@ int Block::GetCellCount() const
 
 Vector2 Block::GetCellRenderPosition(int cellIndex) const
 {
-	return GetRenderPosition() + m_cellShape[cellIndex] * Constants::TILE_SIZE;
+	return GetRenderPosition() + m_cellShape[cellIndex] * GetCellSize();
 }
 
 Vector2 Block::GetCellCenterRotated(int cellIndex) const
@@ -209,7 +231,7 @@ Vector2 Block::RotateLocalPointToWorld(Vector2 localPoint) const
 	// [강체물리 1단계] 예전엔 90도 스냅 회전용 m_pivot을 그대로 재사용했는데, 그건 진짜 무게중심이 아니라서
 	// (모양에 따라 어긋남) 정확한 물리를 위해 GetCenterOfMassLocal()로 바꿨다
 	Vector2 centerOfMassLocal = GetCenterOfMassLocal();
-	Vector2 offset = (localPoint - centerOfMassLocal) * Constants::TILE_SIZE;
+	Vector2 offset = (localPoint - centerOfMassLocal) * GetCellSize();
 
 	float radians = MathUtil::DegreesToRadians(m_angle);
 	float cosAngle = static_cast<float>(std::cos(radians));
@@ -221,7 +243,7 @@ Vector2 Block::RotateLocalPointToWorld(Vector2 localPoint) const
 		offset.x * sinAngle + offset.y * cosAngle
 	};
 
-	Vector2 centerOfMassWorld = GetRenderPosition() + centerOfMassLocal * Constants::TILE_SIZE;
+	Vector2 centerOfMassWorld = GetRenderPosition() + centerOfMassLocal * GetCellSize();
 	return centerOfMassWorld + rotatedOffset;
 }
 
@@ -240,7 +262,7 @@ void Block::GetCellRotatedCorners(int cellIndex, Vector2 outCorners[4]) const
 
 OBBCollider Block::GetCellCollider(int cellIndex) const
 {
-	Vector2 halfExtents = { Constants::TILE_SIZE * 0.5f, Constants::TILE_SIZE * 0.5f };
+	Vector2 halfExtents = { GetCellSize() * 0.5f, GetCellSize() * 0.5f };
 	return OBBCollider(GetCellCenterRotated(cellIndex), halfExtents, m_angle);
 }
 
@@ -270,14 +292,15 @@ float Block::GetMomentOfInertia() const
 
 	Vector2 centerOfMassLocal = GetCenterOfMassLocal();
 	float totalInertia = 0.0f;
+	float cellSize = GetCellSize();
 
 	for (int i = 0; i < CELL_COUNT; ++i)
 	{
 		float cellMass = m_mass * (m_cellWeight[i] / totalWeight);
-		float selfInertiaPerCell = (1.0f / 6.0f) * cellMass * Constants::TILE_SIZE * Constants::TILE_SIZE;
+		float selfInertiaPerCell = (1.0f / 6.0f) * cellMass * cellSize * cellSize;
 
 		Vector2 cellCenterLocal = m_cellShape[i] + Vector2{ 0.5f, 0.5f };
-		Vector2 offsetPx = (cellCenterLocal - centerOfMassLocal) * Constants::TILE_SIZE;
+		Vector2 offsetPx = (cellCenterLocal - centerOfMassLocal) * cellSize;
 		float distanceSquared = offsetPx.x * offsetPx.x + offsetPx.y * offsetPx.y;
 
 		totalInertia += selfInertiaPerCell + cellMass * distanceSquared;
@@ -295,7 +318,8 @@ float Block::GetMomentOfInertia() const
 AABB Block::GetWorldBounds() const
 {
 	Vector2 minPos = GetCellRenderPosition(0);
-	Vector2 maxPos = { minPos.x + Constants::TILE_SIZE, minPos.y + Constants::TILE_SIZE };
+	float cellSize = GetCellSize();
+	Vector2 maxPos = { minPos.x + cellSize, minPos.y + cellSize };
 
 	// 나머지 칸들을 돌면서 최소/최대 좌표를 넓혀간다
 	for (int i = 1; i < GetCellCount(); ++i)
@@ -304,8 +328,8 @@ AABB Block::GetWorldBounds() const
 
 		if (cellPos.x < minPos.x) minPos.x = cellPos.x;
 		if (cellPos.y < minPos.y) minPos.y = cellPos.y;
-		if (cellPos.x + Constants::TILE_SIZE > maxPos.x) maxPos.x = cellPos.x + Constants::TILE_SIZE;
-		if (cellPos.y + Constants::TILE_SIZE > maxPos.y) maxPos.y = cellPos.y + Constants::TILE_SIZE;
+		if (cellPos.x + cellSize > maxPos.x) maxPos.x = cellPos.x + cellSize;
+		if (cellPos.y + cellSize > maxPos.y) maxPos.y = cellPos.y + cellSize;
 	}
 
 	return { minPos, maxPos };
@@ -380,11 +404,22 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 
 	m_position += normal * moveDistance;
 
+	// [임시 디버그 — 소리 없이 옆으로 밀려나는 문제 추적] ResolveRigidCollisionWithBlock에 추가한 것과
+	// 같은 이유 — 이 단일 접촉(바닥/Sleeping 블록) 버전도 속도와 무관하게 매 프레임 계산되므로,
+	// 겹친 정도가 클 때만 남긴다.
+	if (penetration > 3.0f)
+	{
+		std::ostringstream oss;
+		oss << "penetration=" << penetration << " moveDistance=" << moveDistance
+			<< " normal=(" << normal.x << "," << normal.y << ") self=" << this;
+		PhysicsManager::LogDebug("[POSITION-PUSH] " + oss.str());
+	}
+
 	// 2) 충돌 지점의 실제 속도 = 무게중심 속도 + 회전 때문에 생기는 접선 속도.
 	//    회전하는 물체 위의 한 점은 무게중심과 속도가 다르다 (팽이 끝이 중심보다 훨씬 빠르게 도는 것과 같은 이유).
 	//    무게중심에서 contactPoint로 향하는 벡터를 r이라 하면, r이 각속도 ω(라디안/초)로 돌 때
 	//    r의 속도는 r에 수직인 방향으로 (-r.y, r.x) * ω 이다 (원운동의 속도는 항상 반지름에 수직)
-	Vector2 centerOfMassWorld = GetRenderPosition() + GetCenterOfMassLocal() * Constants::TILE_SIZE;
+	Vector2 centerOfMassWorld = GetRenderPosition() + GetCenterOfMassLocal() * GetCellSize();
 	Vector2 r = contactPoint - centerOfMassWorld;
 	float angularVelocityRad = MathUtil::DegreesToRadians(m_angularVelocity);
 	Vector2 tangentialVelocity = { -r.y * angularVelocityRad, r.x * angularVelocityRad };
@@ -415,6 +450,7 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 
 	// 5) 구한 임펄스를 선속도/각속도 양쪽에 나눠 반영한다
 	Vector2 impulse = normal * impulseMagnitude;
+	Vector2 velocityBeforeImpulse = m_velocity;
 	m_velocity += impulse * (1.0f / m_mass);
 
 	float angularImpulse = r.x * impulse.y - r.y * impulse.x; // r × impulse
@@ -432,7 +468,15 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 	// 마찰로 붙들 "정지 자세"가 아니므로 생략하고, 중력+수직 임펄스만으로 코너를 타고 계속 회전해
 	// 빠져나가게 한다.
 	// [지지 없이 얼어붙는 버그 수정] IsContactNormalNearVertical 조건 추가 이유는 이 파일 상단 헬퍼 주석 참고.
-	if (m_physicsState != PhysicsState::Toppling && IsContactNormalNearVertical(normal))
+	// [불균형 중에도 마찰 생략 — Toppling 이전 단계에서 못 넘어가고 얼어붙는 버그 수정] 위 Toppling
+	// 예외와 같은 이유인데, 그 예외는 이미 40도(MAX_TOPPLE_ANGLE)를 넘어 Toppling 상태가 된 블록만
+	// 봐준다. 그런데 지렛대가 짧아 각도가 몇 도밖에 안 되는 "넘어가려는 시도 초반"에도 똑같이 이 마찰이
+	// 매 프레임 회전을 붙잡아버려서, 중력 토크가 계속 걸리는데도 각속도가 못 커지고 결국
+	// TOPPLE_STUCK_TIMEOUT에 걸려 몇 도 안 기운 채로 ForceStabilize된다(physics_debug.log에서 각속도가
+	// 한 프레임씩 번갈아 거의 0으로 짜부라지는 것으로 확인됨). GetImbalanceTimer()>0(불균형 에피소드
+	// 진행 중)도 Toppling과 같이 마찰에서 봐준다 — PhysicsManager::Step이 GROUNDED_ANGULAR_DAMPING을
+	// 건너뛸 때 쓰는 것과 같은 기준.
+	if (m_physicsState != PhysicsState::Toppling && m_imbalanceTimer <= 0.0f && IsContactNormalNearVertical(normal))
 	{
 		Vector2 tangent = { -normal.y, normal.x };
 		float velocityAlongTangent = contactVelocity.x * tangent.x + contactVelocity.y * tangent.y;
@@ -448,6 +492,46 @@ void Block::ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float pe
 		m_velocity += frictionImpulse * (1.0f / m_mass);
 		float frictionAngularImpulse = r.x * frictionImpulse.y - r.y * frictionImpulse.x;
 		newAngularVelocityRad += frictionAngularImpulse / momentOfInertia;
+	}
+
+	// [불균형 중 충돌 임펄스 폭 제한 — Constants::MAX_ANGULAR_DELTA_PER_COLLISION_DURING_IMBALANCE 주석
+	// 참고] 이 충돌 하나가 이번 호출에서 각속도를 바꾸려는 폭이 그 상한을 넘으면, 방향은 그대로 두고
+	// 크기만 눌러서 잘라낸다. 평소(불균형 아님)엔 전혀 관여하지 않는다.
+	if (m_imbalanceTimer > 0.0f)
+	{
+		float maxDeltaRad = MathUtil::DegreesToRadians(Constants::MAX_ANGULAR_DELTA_PER_COLLISION_DURING_IMBALANCE);
+		float deltaRad = newAngularVelocityRad - angularVelocityRad;
+		if (deltaRad > maxDeltaRad) deltaRad = maxDeltaRad;
+		if (deltaRad < -maxDeltaRad) deltaRad = -maxDeltaRad;
+		newAngularVelocityRad = angularVelocityRad + deltaRad;
+	}
+
+	// [불균형 중 충돌 임펄스가 선속도로 새는 것 방지 — Constants::MAX_LINEAR_DELTA_PER_COLLISION_DURING_IMBALANCE
+	// 주석 참고] 위 각속도 clamp와 대칭. 이 충돌 하나(마찰 포함)가 선속도를 바꾼 폭이 상한을 넘으면 방향은
+	// 그대로 두고 크기만 잘라낸다.
+	if (m_imbalanceTimer > 0.0f)
+	{
+		Vector2 velocityDelta = m_velocity - velocityBeforeImpulse;
+		float deltaLength = std::sqrt(velocityDelta.x * velocityDelta.x + velocityDelta.y * velocityDelta.y);
+		if (deltaLength > Constants::MAX_LINEAR_DELTA_PER_COLLISION_DURING_IMBALANCE)
+		{
+			float scale = Constants::MAX_LINEAR_DELTA_PER_COLLISION_DURING_IMBALANCE / deltaLength;
+			m_velocity = velocityBeforeImpulse + velocityDelta * scale;
+		}
+	}
+
+	// [임시 디버그] 불균형 진행 중인 블록의 바닥 충돌이 각속도를 얼마나 바꿨는지 남긴다(위 상한 적용
+	// 이후 값) — 회전을 붙잡는 게 마찰(위에서 이미 스킵됨) 말고 이 normal 임펄스(코너가 바닥을
+	// 파고들지 못하게 막는 항목) 자체인지 확인하기 위함.
+	if (m_imbalanceTimer > 0.0f)
+	{
+		std::ostringstream oss;
+		oss << "contact=(" << contactPoint.x << "," << contactPoint.y << ") normal=(" << normal.x << "," << normal.y
+			<< ") penetration=" << penetration << " r=(" << r.x << "," << r.y << ")"
+			<< " angularImpulse=" << angularImpulse << " deltaDeg="
+			<< MathUtil::RadiansToDegrees(newAngularVelocityRad - angularVelocityRad)
+			<< " block=" << this;
+		PhysicsManager::LogDebug("[COLLISION-IMPULSE] " + oss.str());
 	}
 
 	m_angularVelocity = MathUtil::RadiansToDegrees(newAngularVelocityRad);
@@ -480,9 +564,24 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 	m_position += normal * (correctedPenetration * pushRatioSelf);
 	other->m_position -= normal * (correctedPenetration * pushRatioOther);
 
+	// [임시 디버그 — 소리 없이 옆으로 밀려나는 문제 추적] 이 위치 보정은 지금까지의 다른 로그들과 달리
+	// 속도/불균형 상태와 무관하게 항상 계산되는데, 겹친 정도가 클 때(착지 순간처럼)만 남긴다 — 매 프레임
+	// 미세한 밀어냄까지 다 찍으면 스팸이 너무 심하다. penetration 자체가 크면 한 번에 크게 밀리지 않게
+	// MAX_POSITION_CORRECTION_PER_STEP으로 이미 잘려있어도, 그게 여러 프레임 이어지면 눈에 안 띄게
+	// 계속 밀려날 수 있다.
+	if (penetration > 3.0f)
+	{
+		std::ostringstream oss;
+		oss << "penetration=" << penetration << " correctedPenetration=" << correctedPenetration
+			<< " normal=(" << normal.x << "," << normal.y << ")"
+			<< " selfPush=(" << (normal.x * correctedPenetration * pushRatioSelf) << "," << (normal.y * correctedPenetration * pushRatioSelf) << ")"
+			<< " self=" << this << " other=" << other;
+		PhysicsManager::LogDebug("[POSITION-PUSH] " + oss.str());
+	}
+
 	// 2) 양쪽 접촉점의 실제 속도(무게중심 속도 + 회전 접선 속도)를 각각 구한다
-	Vector2 centerOfMassWorldSelf = GetRenderPosition() + GetCenterOfMassLocal() * Constants::TILE_SIZE;
-	Vector2 centerOfMassWorldOther = other->GetRenderPosition() + other->GetCenterOfMassLocal() * Constants::TILE_SIZE;
+	Vector2 centerOfMassWorldSelf = GetRenderPosition() + GetCenterOfMassLocal() * GetCellSize();
+	Vector2 centerOfMassWorldOther = other->GetRenderPosition() + other->GetCenterOfMassLocal() * other->GetCellSize();
 	Vector2 rSelf = contactPoint - centerOfMassWorldSelf;
 	Vector2 rOther = contactPoint - centerOfMassWorldOther;
 
@@ -521,6 +620,8 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 	Vector2 impulse = normal * impulseMagnitude;
 
 	// 5) 뉴턴의 3법칙: this는 +impulse(=other에게서 멀어지는 방향), other는 -impulse(=this에게서 멀어지는 방향)
+	Vector2 velocityBeforeImpulseSelf = m_velocity;
+	Vector2 velocityBeforeImpulseOther = other->m_velocity;
 	m_velocity += impulse * (1.0f / m_mass);
 	other->m_velocity -= impulse * (1.0f / other->m_mass);
 
@@ -536,7 +637,11 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 	// (다른 블록 모서리에 걸친 채 회전하며 빠져나가는 코너에) 마찰이 그 회전을 붙잡아 각속도를 죽이는 걸
 	// 막는다.
 	// [지지 없이 얼어붙는 버그 수정] IsContactNormalNearVertical 조건 추가 이유는 이 파일 상단 헬퍼 주석 참고.
-	if (m_physicsState != PhysicsState::Toppling && other->m_physicsState != PhysicsState::Toppling && IsContactNormalNearVertical(normal))
+	// [불균형 중에도 마찰 생략] ResolveRigidCollision에 추가한 것과 같은 이유 — this/other 둘 중
+	// 하나라도 불균형 에피소드 진행 중(GetImbalanceTimer()>0)이면, 아직 Toppling으로 안 넘어갔어도
+	// 이 마찰이 넘어가려는 회전을 붙잡지 않게 한다.
+	if (m_physicsState != PhysicsState::Toppling && other->m_physicsState != PhysicsState::Toppling &&
+		m_imbalanceTimer <= 0.0f && other->m_imbalanceTimer <= 0.0f && IsContactNormalNearVertical(normal))
 	{
 		Vector2 tangent = { -normal.y, normal.x };
 		float velocityAlongTangent = relativeVelocity.x * tangent.x + relativeVelocity.y * tangent.y;
@@ -563,6 +668,50 @@ void Block::ResolveRigidCollisionWithBlock(Block* other, Vector2 contactPoint, V
 		newAngularVelocityOtherRad -= frictionAngularImpulseOther / momentOfInertiaOther;
 	}
 
+	// [불균형 중 충돌 임펄스 폭 제한] ResolveRigidCollision에 추가한 것과 같은 이유 —
+	// Constants::MAX_ANGULAR_DELTA_PER_COLLISION_DURING_IMBALANCE 주석 참고. this/other 각자 자기
+	// 불균형 상태에 따라 독립적으로 잘라낸다(둘 다 불균형 중일 수도, 한쪽만일 수도 있어서).
+	if (m_imbalanceTimer > 0.0f)
+	{
+		float maxDeltaRad = MathUtil::DegreesToRadians(Constants::MAX_ANGULAR_DELTA_PER_COLLISION_DURING_IMBALANCE);
+		float deltaRad = newAngularVelocitySelfRad - angularVelocitySelfRad;
+		if (deltaRad > maxDeltaRad) deltaRad = maxDeltaRad;
+		if (deltaRad < -maxDeltaRad) deltaRad = -maxDeltaRad;
+		newAngularVelocitySelfRad = angularVelocitySelfRad + deltaRad;
+	}
+	if (other->m_imbalanceTimer > 0.0f)
+	{
+		float maxDeltaRad = MathUtil::DegreesToRadians(Constants::MAX_ANGULAR_DELTA_PER_COLLISION_DURING_IMBALANCE);
+		float deltaRad = newAngularVelocityOtherRad - angularVelocityOtherRad;
+		if (deltaRad > maxDeltaRad) deltaRad = maxDeltaRad;
+		if (deltaRad < -maxDeltaRad) deltaRad = -maxDeltaRad;
+		newAngularVelocityOtherRad = angularVelocityOtherRad + deltaRad;
+	}
+
+	// [불균형 중 충돌 임펄스가 선속도로 새는 것 방지] ResolveRigidCollision에 추가한 것과 같은 이유 —
+	// Constants::MAX_LINEAR_DELTA_PER_COLLISION_DURING_IMBALANCE 주석 참고. this/other 각자 자기
+	// 불균형 상태에 따라 독립적으로 잘라낸다.
+	if (m_imbalanceTimer > 0.0f)
+	{
+		Vector2 velocityDeltaSelf = m_velocity - velocityBeforeImpulseSelf;
+		float deltaLengthSelf = std::sqrt(velocityDeltaSelf.x * velocityDeltaSelf.x + velocityDeltaSelf.y * velocityDeltaSelf.y);
+		if (deltaLengthSelf > Constants::MAX_LINEAR_DELTA_PER_COLLISION_DURING_IMBALANCE)
+		{
+			float scale = Constants::MAX_LINEAR_DELTA_PER_COLLISION_DURING_IMBALANCE / deltaLengthSelf;
+			m_velocity = velocityBeforeImpulseSelf + velocityDeltaSelf * scale;
+		}
+	}
+	if (other->m_imbalanceTimer > 0.0f)
+	{
+		Vector2 velocityDeltaOther = other->m_velocity - velocityBeforeImpulseOther;
+		float deltaLengthOther = std::sqrt(velocityDeltaOther.x * velocityDeltaOther.x + velocityDeltaOther.y * velocityDeltaOther.y);
+		if (deltaLengthOther > Constants::MAX_LINEAR_DELTA_PER_COLLISION_DURING_IMBALANCE)
+		{
+			float scale = Constants::MAX_LINEAR_DELTA_PER_COLLISION_DURING_IMBALANCE / deltaLengthOther;
+			other->m_velocity = velocityBeforeImpulseOther + velocityDeltaOther * scale;
+		}
+	}
+
 	m_angularVelocity = MathUtil::RadiansToDegrees(newAngularVelocitySelfRad);
 	other->m_angularVelocity = MathUtil::RadiansToDegrees(newAngularVelocityOtherRad);
 }
@@ -578,7 +727,7 @@ void Block::ApplyGravityTorque(Vector2 pivotWorld, float combinedComX, float com
 	// 오히려 반대 방향 토크가 나올 수 있었다 — 실전 확인). r.y(높이)는 계산이 복잡해지는 걸 피하려고
 	// 이 블록 자신의 무게중심 높이를 그대로 쓴다(근사) — 토크 자체는 r.y와 무관(gravityForce.x=0)하고
 	// 아래 관성 계산에서만 근사치로 쓰인다.
-	Vector2 centerOfMassWorld = GetRenderPosition() + GetCenterOfMassLocal() * Constants::TILE_SIZE;
+	Vector2 centerOfMassWorld = GetRenderPosition() + GetCenterOfMassLocal() * GetCellSize();
 	Vector2 r = { combinedComX - pivotWorld.x, centerOfMassWorld.y - pivotWorld.y };
 	float torqueAboutPivot = r.x * (combinedMass * Constants::GRAVITY);
 
@@ -594,8 +743,41 @@ void Block::ApplyGravityTorque(Vector2 pivotWorld, float combinedComX, float com
 	float distanceSquared = r.x * r.x + r.y * r.y;
 	float inertiaAboutPivot = GetMomentOfInertia() * Constants::TOPPLE_INERTIA_SCALE + combinedMass * distanceSquared;
 
+	// [칸 크기 보정 — GiantTetrominoBlock이 유독 둔하게 느껴지는 문제 수정] 평행축 항(combinedMass*거리^2)의
+	// "거리"는 지렛대(r.x 등)라서 칸 크기에 비례해 커지는데, 제곱으로 들어가므로 각가속도(토크/관성)는
+	// 결국 1/칸크기에 비례해서 작아진다 — 질량은 분자(토크)와 분모(관성)에 똑같이 곱해져서 서로 상쇄되므로,
+	// 무게를 아무리 조정해도 이 둔한 느낌은 안 사라진다(실전 확인: GIANT_BLOCK_MASS_MULTIPLIER를 올려도
+	// physics_debug.log의 accelDeg가 그대로였음). 칸 크기가 TILE_SIZE보다 크면 그 비율만큼 관성을 다시
+	// 나눠서, "같은 상대적 기울기면 크기와 무관하게 비슷하게 잘 넘어간다"는 게임 느낌을 유지한다. 일반
+	// 블록(GetCellSize()==TILE_SIZE)은 비율이 1이라 전혀 영향받지 않는다 — 기존 튜닝을 안 건드린다.
+	float cellSizeInertiaCompensation = GetCellSize() / Constants::TILE_SIZE;
+	inertiaAboutPivot /= cellSizeInertiaCompensation;
+
 	float angularAccelerationRad = torqueAboutPivot / inertiaAboutPivot;
+
+	// [극단적으로 짧은 지렛대 케이스 상한 — 실전 로그로 확인됨] r.y(피벗과 자기 무게중심의 높이 차)가
+	// 유독 작은 모양(예: 낮고 넓은 T자)은 평행축 항(거리^2)이 작아져서 관성이 비정상적으로 작아지고,
+	// 결과 각가속도가 1000+도/초² 넘게 튀어서 0.3초도 안 돼 40도까지 돌아가 "툭 튀어나오는" 것처럼
+	// 보인다(accelDeg=1124~1258로 실전 확인). 지금까지 정상적으로 느껴졌던 빠른 전도는 대부분
+	// 400~900도/초² 대였다 — MAX_TOPPLE_ANGULAR_ACCELERATION으로 상한을 둬서, 극단적으로 짧은 지렛대
+	// 케이스도 최소 몇 프레임에 걸쳐 자연스럽게 가속되게 한다. 각속도 상한(MAX_ANGULAR_VELOCITY)과는
+	// 별개 — 그건 "결과 속도"를 누르고, 이건 "한 프레임에 얼마나 급격히 가속될 수 있는지"를 누른다.
+	float maxAngularAccelerationRad = MathUtil::DegreesToRadians(Constants::MAX_TOPPLE_ANGULAR_ACCELERATION);
+	if (angularAccelerationRad > maxAngularAccelerationRad) angularAccelerationRad = maxAngularAccelerationRad;
+	if (angularAccelerationRad < -maxAngularAccelerationRad) angularAccelerationRad = -maxAngularAccelerationRad;
+
 	m_angularVelocity += MathUtil::RadiansToDegrees(angularAccelerationRad) * deltaTime;
+
+	// [임시 디버그] 순수 토크만으로 계산된 이번 프레임 각가속도를 남긴다 — 이후 충돌 임펄스가
+	// 이걸 얼마나 깎아먹는지 [COLLISION-IMPULSE] 로그와 비교하기 위한 기준값.
+	{
+		std::ostringstream oss;
+		oss << "r.x=" << r.x << " r.y=" << r.y << " torque=" << torqueAboutPivot
+			<< " inertia=" << inertiaAboutPivot
+			<< " accelDeg=" << MathUtil::RadiansToDegrees(angularAccelerationRad)
+			<< " block=" << this;
+		PhysicsManager::LogDebug("[TORQUE-TRACE] " + oss.str());
+	}
 }
 
 void Block::BeginToppling()
@@ -679,10 +861,37 @@ float Block::GetImbalanceTimer() const
 	return m_imbalanceTimer;
 }
 
+float Block::SmoothCombinedMass(float rawCombinedMass, bool isNewEpisode, float deltaTime)
+{
+	if (isNewEpisode)
+	{
+		m_smoothedCombinedMass = rawCombinedMass;
+		return m_smoothedCombinedMass;
+	}
+
+	// 지수 이동평균: alpha가 클수록(deltaTime이 클수록/시간상수가 작을수록) raw 값을 더 빨리 따라간다.
+	float alpha = 1.0f - std::exp(-deltaTime / Constants::WEIGHT_SMOOTHING_TIME_CONSTANT);
+	m_smoothedCombinedMass += (rawCombinedMass - m_smoothedCombinedMass) * alpha;
+	return m_smoothedCombinedMass;
+}
+
+float Block::SmoothCombinedComX(float rawCombinedComX, bool isNewEpisode, float deltaTime)
+{
+	if (isNewEpisode)
+	{
+		m_smoothedCombinedComX = rawCombinedComX;
+		return m_smoothedCombinedComX;
+	}
+
+	float alpha = 1.0f - std::exp(-deltaTime / Constants::WEIGHT_SMOOTHING_TIME_CONSTANT);
+	m_smoothedCombinedComX += (rawCombinedComX - m_smoothedCombinedComX) * alpha;
+	return m_smoothedCombinedComX;
+}
+
 void Block::SetImbalancePivot(Vector2 pivot)
 {
 	m_imbalancePivot = pivot;
-	m_imbalanceCenterOfMassAtStart = GetRenderPosition() + GetCenterOfMassLocal() * Constants::TILE_SIZE;
+	m_imbalanceCenterOfMassAtStart = GetRenderPosition() + GetCenterOfMassLocal() * GetCellSize();
 	m_imbalanceAngleAtStart = m_angle;
 }
 
@@ -696,7 +905,7 @@ Vector2 Block::GetEffectiveWeightPositionWorld() const
 	if (m_imbalanceTimer <= 0.0f)
 	{
 		// 불균형 에피소드 중이 아니면(평범하게 안정된 상태) 그냥 진짜 무게중심을 쓴다.
-		return GetRenderPosition() + GetCenterOfMassLocal() * Constants::TILE_SIZE;
+		return GetRenderPosition() + GetCenterOfMassLocal() * GetCellSize();
 	}
 
 	// 에피소드 시작 시점의 (무게중심-피벗) 오프셋을, 그 이후 실제로 더 돈 각도만큼 회전시켜서
@@ -809,7 +1018,17 @@ void Block::Sleep()
 	float nearestRightAngle = std::round(m_angle / 90.0f) * 90.0f;
 	float angleFromRightAngle = std::fabs(m_angle - nearestRightAngle);
 	bool isVisiblyTiltedWedge = m_isWedged && angleFromRightAngle > Constants::SUPPORT_SURFACE_MAX_TILT_DEGREES;
-	if (!isVisiblyTiltedWedge && angleFromRightAngle <= Constants::ANGLE_SNAP_TOLERANCE)
+	// [Sleep 재발 시 각도 스냅으로 진행 상황이 매번 지워지는 문제 수정 — 실전 로그로 확인됨] 살짝
+	// 불균형한 블록은 아주 조금(1도 미만)만 기운 채로 "일시적으로 균형처럼" 읽혀 금방 다시 잠들 수
+	// 있는데, 매번 여기서 0도로 스냅해버리면 다음 에피소드가 또 0도에서 다시 시작해서 똑같은 만큼만
+	// 기울고 잠들기를 반복한다 — 실제로는 사이클마다 조금씩(0.1→0.3→0.6→...→4도) 더 기울며 진짜
+	// 넘어지는 방향으로 나아가고 있었는데, 스냅이 그 누적을 매번 지워서 결국 재시도 한도에 걸려
+	// 영구 포기해버렸다. m_sleepReawakenCount>0(이미 한 번이라도 자다가 다시 불균형이 시작된 적 있음)이면
+	// 스냅을 건너뛰어서 진행 상황이 사이클을 거치며 누적되게 한다 — ANGLE_SNAP_TOLERANCE(12도) 이내에서만
+	// 일어나는 일이라 IsNearAxisAlignedAngle의 지지 판정 기준(5도)보다 작을 수 있어 위에 얹힌 것의 지지가
+	// 깨지진 않는다(그 이상 기울면 지지 판정 자체가 이미 무너져서 어차피 스냅 여부와 무관하게 반응해야 한다).
+	bool hasReawakenedBefore = m_sleepReawakenCount > 0;
+	if (!isVisiblyTiltedWedge && !hasReawakenedBefore && angleFromRightAngle <= Constants::ANGLE_SNAP_TOLERANCE)
 	{
 		m_angle = nearestRightAngle;
 	}
@@ -894,6 +1113,34 @@ int Block::GetWakeChainDepth() const
 void Block::SetWakeChainDepth(int depth)
 {
 	m_wakeChainDepth = depth;
+}
+
+void Block::MarkRealImpactThisStep()
+{
+	m_hadRealImpactThisStep = true;
+}
+
+void Block::AdvanceSustainedCollisionTracking()
+{
+	if (m_hadRealImpactThisStep)
+	{
+		++m_sustainedCollisionSteps;
+		m_hadRealImpactThisStep = false;
+	}
+	else
+	{
+		m_sustainedCollisionSteps = 0;
+	}
+}
+
+int Block::GetSustainedCollisionSteps() const
+{
+	return m_sustainedCollisionSteps;
+}
+
+bool Block::IsGiant() const
+{
+	return false;
 }
 
 void Block::Land()

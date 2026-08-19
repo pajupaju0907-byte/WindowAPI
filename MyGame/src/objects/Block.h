@@ -85,6 +85,21 @@ public:
 	int GetWakeChainDepth() const;
 	void SetWakeChainDepth(int depth);
 
+	// [지속 접촉 에너지 증가 완화 — round 8/11의 근본 원인(접촉점 순차 처리)은 그대로 둔 채 증상만
+	// 완화, 실전 로그로 확인됨] 두 블록이 떨어지지 않고 여러 스텝 연속으로 "진짜 충돌"(WAKE_IMPACT_SPEED_
+	// THRESHOLD 이상)을 주고받으면, 매 스텝 아주 조금씩 새는 에너지가 쌓여서 수십 스텝(0.5초 이상) 뒤엔
+	// 자유낙하로는 설명 안 되는 속도(예: v=400+)까지 불어난다 — WAKE_DAMPING(0.3초 한정)으로는 못 잡는
+	// 지속형 문제라 따로 필요하다. PhysicsManager::ResolveBlockPairCollision이 "진짜 충돌"이 있었던
+	// 스텝마다 MarkRealImpactThisStep()을 부르고, Step() 끝에서 AdvanceSustainedCollisionTracking()을
+	// 한 번씩 불러 "이번 스텝에 있었으면 카운트 증가, 없었으면 0으로 리셋"한다.
+	void MarkRealImpactThisStep();
+	void AdvanceSustainedCollisionTracking();
+	int GetSustainedCollisionSteps() const;
+
+	// [다음 블럭 미리보기 — "빅" 표시용] 이 블록이 GiantTetrominoBlock인지. 기본은 false, 파생 클래스가
+	// 오버라이드한다 — PlayScene::RenderNextBlockPreview가 다음 블록이 자이언트면 "BIG" 배지를 같이 그린다.
+	virtual bool IsGiant() const;
+
 	// Airborne -> Awake 전환. 착지 시 BlockManager가 호출해 그리드 좌표를 월드 좌표(m_position)로
 	// 확정하고 물리 시뮬레이션을 시작시키는 지점.
 	void Land();
@@ -96,6 +111,12 @@ public:
 	Vector2 GetRenderPosition() const;
 	int GetCellCount() const;
 	Vector2 GetCellRenderPosition(int cellIndex) const;
+
+	// [블록별 칸 크기 — GiantTetrominoBlock 지원용] 칸 하나(m_cellShape 단위 1칸)의 실제 픽셀 크기.
+	// 기본은 Constants::TILE_SIZE 그대로. 위치/충돌/렌더링/관성모멘트 계산이 전부 상수를 직접 쓰는
+	// 대신 이 함수를 거치게 해서, 파생 클래스가 이 값만 오버라이드하면(예: 확대 배율 곱하기) 칸 개수는
+	// 그대로 두고 칸 하나하나의 실제 크기만 키우거나 줄일 수 있다.
+	virtual float GetCellSize() const;
 
 	// cellIndex번 칸의 "중심"을, 무게중심을 축으로 m_angle만큼 회전시킨 뒤의 월드 좌표로 반환.
 	// 물리/충돌 판정에는 안 쓰고 시각 표현(렌더링) 전용 — 스프라이트를 그릴 때는 반드시 이 중심점을
@@ -166,6 +187,12 @@ public:
 	// 보정을 그냥 더하는 게 실제 필요량보다 훨씬 큰 임펄스를 만들어서 블록이 통째로 날아가는 훨씬
 	// 심각한 폭주로 이어졌다(physics_debug.log로 실전 확인 — 한 번의 충돌 처리에서 각속도가 수백 도/초대로
 	// 튐). 검증된 순차 처리(+ Step()의 4회 반복 수렴)로 되돌린다.
+	// [2점 동시 처리 재시도했다가 되돌림] 접촉점 두 개를 서로의 영향(off-diagonal)까지 포함한 2x2
+	// 연립방정식으로 한 번에 푸는 버전을 시도했는데, 원래 문제(불균형 중 회전이 안 자람)는 못 고치고
+	// 오히려 다른 곳(가벼운 블록이 살짝 흔들리기만 해도 저항 없이 순식간에 폭주 회전)에서 새 버그가
+	// 생겨서 되돌렸다(physics_debug.log로 실전 확인). 대신 ResolveRigidCollision/
+	// ResolveRigidCollisionWithBlock 내부에서 불균형 중일 때만 한 번의 충돌 임펄스가 각속도를 바꿀 수
+	// 있는 폭을 제한하는 방식(GetImbalanceTimer()>0 조건, 아래 두 함수 내부)으로 대신한다.
 	void ResolveRigidCollision(Vector2 contactPoint, Vector2 normal, float penetration);
 
 	// [강체물리 3단계] ResolveRigidCollision의 "상대는 안 움직이는 바닥" 버전과 달리, other도 실제로
@@ -232,6 +259,20 @@ public:
 	// 0 밑으로 내려가 지금과 동일하게 리셋되지만, 짧은 깜빡임 한두 번엔 누적 시간이 거의 안 줄어든다.
 	void DecayImbalanceTimer(float deltaTime);
 	float GetImbalanceTimer() const;
+
+	// [무게 계산 완충 — "매 프레임 처음부터 다시 계산돼서 살짝만 흔들려도 결과가 뒤집히는" 문제 완화,
+	// 실전 로그로 확인됨(combinedMass가 1↔3으로, pivot이 좌↔우로 매 프레임 뒤집힘)] PhysicsManager::
+	// AccumulateSupportedMass는 "누가 내 위에 얹혀있는지"를 매 스텝 raw 기하학적 위치로 처음부터 다시
+	// 판정한다 — 이전 프레임과의 연속성이 전혀 없어서, 위치가 거의 안 바뀌어도 경계값 근처에서 판정이
+	// 살짝만 흔들리면 결과(combinedMass/combinedComX)가 완전히 다른 값으로 튄다. 이 함수는 그 raw
+	// 결과값을 즉시 그대로 쓰는 대신 지수 이동평균으로 부드럽게 이어지게 한다 — 새 불균형 에피소드가
+	// 시작되는 프레임에는(isNewEpisode) raw 값으로 그대로 스냅(완충 없음, 첫 판단은 지연시키지 않음)하고,
+	// 그 이후 같은 에피소드 안에서는 Constants::WEIGHT_SMOOTHING_TIME_CONSTANT 기준으로 blend한다.
+	// 실제로 여러 프레임에 걸쳐 진행되는 변화(자식이 진짜로 떨어져나감 등)는 그대로 따라가고, 한두
+	// 프레임짜리 순간 flicker만 걸러진다. 접촉/충돌 계산 자체는 전혀 안 건드린다 — 그쪽은 위험해서
+	// 손 안 댄다는 기존 방침(round 8/11 관련 주석 참고)을 그대로 유지.
+	float SmoothCombinedMass(float rawCombinedMass, bool isNewEpisode, float deltaTime);
+	float SmoothCombinedComX(float rawCombinedComX, bool isNewEpisode, float deltaTime);
 
 	// [pivot 고정 — 넘어짐 방향 오류 방지] 이번 불균형 에피소드의 토크 계산용 pivot을 고정해서 기억해둔다.
 	// 매 프레임 그 순간의 회전된 발판에서 pivot을 다시 뽑으면, 회전이 진행될수록 무게중심에서 먼 발판이
@@ -308,6 +349,12 @@ protected:
 	// SetWakeChainDepth()로 갱신한다.
 	int m_wakeChainDepth = 0;
 
+	// [지속 접촉 에너지 증가 완화] GetSustainedCollisionSteps() 선언부(위) 주석 참고. m_hadRealImpactThisStep은
+	// 이번 스텝에 "진짜 충돌"이 있었는지 표시하는 임시 플래그(매 스텝 AdvanceSustainedCollisionTracking()이
+	// 읽고 나서 지운다), m_sustainedCollisionSteps는 그게 몇 스텝 연속으로 이어졌는지 센다.
+	bool m_hadRealImpactThisStep = false;
+	int m_sustainedCollisionSteps = 0;
+
 	// [넘어짐 재발 판정 기준각] 마지막으로 안정이 확인된 각도. Land()에서 0으로, ConfirmRestingAngle()
 	// 호출마다 그 순간 각도로 갱신된다.
 	float m_restAngleReference = 0.0f;
@@ -340,6 +387,10 @@ protected:
 	// 위 타이머가 TOPPLE_STUCK_TIMEOUT을 넘도록 못 넘어가면 켜진다 — 같은 불균형을 다시 재시도하지
 	// 않기 위한 표시. ResetImbalanceTimer()에서 같이 풀린다.
 	bool m_isWedged = false;
+	// [무게 계산 완충] SmoothCombinedMass/SmoothCombinedComX 선언부(위) 주석 참고. 에피소드 시작
+	// 프레임에 raw 값으로 스냅되고, 그 이후로는 이 값이 지수 이동평균의 "현재 상태"로 계속 갱신된다.
+	float m_smoothedCombinedMass = 0.0f;
+	float m_smoothedCombinedComX = 0.0f;
 	// [pivot 고정] 이번 불균형 에피소드에서 계속 재사용할 토크 계산용 pivot(월드 좌표).
 	Vector2 m_imbalancePivot = { 0.0f, 0.0f };
 	// [무게 전달 계산 전용] 이번 불균형 에피소드가 시작된 순간의 실제 무게중심/각도. SetImbalancePivot()

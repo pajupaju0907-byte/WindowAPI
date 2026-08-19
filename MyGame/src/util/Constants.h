@@ -10,6 +10,25 @@ namespace Constants
 	// 48px 타일 * 14x20 그리드 = 672x960 창 크기
 	constexpr float TILE_SIZE = 48.0f;
 
+	// [GiantTetrominoBlock] 칸 개수(4)는 일반 테트로미노와 똑같이 유지하고, 칸 하나하나의 실제 픽셀
+	// 크기(Block::GetCellSize())만 이 배율만큼 키운다. GRID_SUBCELL_SCALE(2)로 나눴을 때 정수가
+	// 나오는 값(0.5 단위)으로 골라야 낙하 중(Airborne) 그리드 판정이 딱 맞아떨어진다 — 1.5배 = 칸
+	// 하나가 서브셀 3개(보통은 2개)를 차지.
+	constexpr float GIANT_BLOCK_SCALE_MULTIPLIER = 1.5f;
+
+	// [GiantTetrominoBlock] 무게도 커진 크기 비율만큼 늘어난다(사용자 요청, 2026-08-19) — 일반 블록의
+	// 기본 질량(1.0)에 위 배율을 그대로 곱한 값을 총 질량으로 쓴다.
+	constexpr float GIANT_BLOCK_MASS_MULTIPLIER = GIANT_BLOCK_SCALE_MULTIPLIER;
+
+	// [GiantTetrominoBlock 스폰 확률 — 높이 구간별, 사용자 확정 설계, 2026-08-19] BlockManager::
+	// GetTallestHeightMeters() 기준으로 매 일반 스폰 시도마다 이 확률로 대신 자이언트가 나온다.
+	// 10m 미만 5%, 10~20m 15%, 20m 이상 20%.
+	constexpr float GIANT_BLOCK_SPAWN_CHANCE_HEIGHT_TIER_1_METERS = 10.0f;
+	constexpr float GIANT_BLOCK_SPAWN_CHANCE_HEIGHT_TIER_2_METERS = 20.0f;
+	constexpr float GIANT_BLOCK_SPAWN_CHANCE_BELOW_TIER_1 = 0.05f;
+	constexpr float GIANT_BLOCK_SPAWN_CHANCE_TIER_1_TO_2 = 0.15f;
+	constexpr float GIANT_BLOCK_SPAWN_CHANCE_ABOVE_TIER_2 = 0.20f;
+
 	// [블럭 색상] BlockT.png는 가로로 색깔 정사각형 11칸이 이어진 스프라이트시트(칸 사이 여백 있음).
 	// 테트로미노 7종은 이 중 앞에서부터 7칸(0~6)을 하나씩 잘라 쓴다(TetrominoBlock::TetrominoBlock 참고).
 	// 실제 정사각형 그림은 이미지(1536x1024) 전체가 아니라 세로 가운데의 좁은 띠 안에만 있고 위아래는
@@ -77,6 +96,37 @@ namespace Constants
 	// 안 가므로 평소엔 안 걸린다 — 값은 자리표시자라 체감에 맞게 조정할 것.
 	constexpr float MAX_LINEAR_VELOCITY = 600.0f;
 	constexpr float MAX_ANGULAR_VELOCITY = 300.0f;
+
+	// [극단적으로 짧은 지렛대(피벗-무게중심 높이차 r.y가 작은 모양) 케이스 상한 — Block::ApplyGravityTorque
+	// 주석 참고, 2026-08-19] 정상적으로 빠르게 느껴지는 전도는 보통 400~900도/초² 대였는데(실전 로그
+	// 기준), 특정 모양(낮고 넓은 T자 등)은 관성이 비정상적으로 작아져서 1000~1300도/초²까지 튀어 0.3초
+	// 안에 다 넘어가버려 "툭 튀어나오는" 것처럼 보였다. 이 값으로 한 프레임에 걸 수 있는 각가속도
+	// 자체를 눌러서, 그런 케이스도 최소 몇 프레임에 걸쳐 자연스럽게 가속되게 한다.
+	constexpr float MAX_TOPPLE_ANGULAR_ACCELERATION = 600.0f;
+
+	// [불균형 중 충돌 임펄스가 중력 토크를 덮어버리는 것 방지] 접촉점 2개를 순차 처리하는 방식(위
+	// MAX_ANGULAR_VELOCITY 주석 참고, 동시 처리로 바꿨다가 다른 곳에서 더 큰 폭주가 나서 되돌린 이력이
+	// 있어 다시 손대기 위험함)은, 넘어지려고 기우는 중인 블록에서 한 번의 충돌 임펄스가 그 프레임의
+	// 실제 중력 토크보다 훨씬(5~10배) 큰 각속도 변화를 만들고, 그것도 접촉점마다 부호가 반대로 나와
+	// 서로 거의 상쇄되는 현상으로 실전 확인됨(physics_debug.log — 토크는 프레임당 1~2도인데 충돌
+	// 임펄스 한 번이 ±8도씩 왔다갔다). 그러면 진짜 신호(중력 토크)가 이 노이즈에 묻혀서 명백히
+	// 넘어져야 할 블록이 제자리에서 미세하게 진동만 하다가 TOPPLE_STUCK_TIMEOUT에 걸린다. 불균형
+	// 진행 중(GetImbalanceTimer()>0)인 블록에 한해서만, 한 번의 충돌 해결이 각속도를 바꿀 수 있는
+	// 폭을 이 값으로 제한한다 — 평소 착지/쌓임(불균형 아님)은 전혀 영향받지 않는다. 값은 자리표시자라
+	// 체감에 맞게 조정할 것.
+	constexpr float MAX_ANGULAR_DELTA_PER_COLLISION_DURING_IMBALANCE = 3.0f;
+
+	// [불균형 중 충돌 임펄스가 선속도로 새는 것 방지 — 실전에서 발견된 "탑이 갑자기 튀어나가는" 버그 수정,
+	// 2026-08-19] 위 각속도 clamp는 회전에만 상한을 걸고, 같은 충돌 임펄스가 만드는 선속도 변화(m_velocity
+	// 갱신)엔 아무 제한이 없었다 — 이미 빠르게 회전 중인 블록(각속도가 여러 스텝에 걸쳐 커진 상태)의
+	// 무게중심에서 먼 모서리가 다른 블록/바닥에 닿으면, 그 지점의 접선 속도(r×ω)가 매우 커서 충돌
+	// 임펄스 공식이 그 에너지의 상당 부분을 회전 대신 "선속도"로 돌려버린다 — 각속도는 이미 위 clamp로
+	// 눌려 있으니 튀는 게 안 보이지만, 선속도가 한 프레임 사이에 몇 배로 뛰어서 블록이 "툭" 튀어나가는
+	// 것처럼 보인다(physics_debug.log에서 실전 확인: v가 한 스텝 만에 1→10.85로 점프). 각속도 clamp와
+	// 대칭으로, 불균형 진행 중(GetImbalanceTimer()>0)인 블록에 한해서만 한 번의 충돌 해결이 선속도를
+	// 바꿀 수 있는 폭(px/s)을 이 값으로 제한한다. 평소 착지/쌓임(불균형 아님)은 전혀 영향받지 않는다.
+	// 값은 자리표시자라 체감에 맞게 조정할 것.
+	constexpr float MAX_LINEAR_DELTA_PER_COLLISION_DURING_IMBALANCE = 15.0f;
 
 	// [블록별 rest timer] 이 속도(px/s) 밑으로 계속 유지돼야 Sleep 후보로 본다. UNSTABLE_SPEED_THRESHOLD보다
 	// 훨씬 작아야 한다 — 저건 "탑이 무너지고 있는가"를 보는 값이고, 이건 "이 블록 하나가 진짜 멈췄는가"를 보는 값이다.
@@ -156,10 +206,27 @@ namespace Constants
 	// 해결한다. 값을 넉넉히 벌린 지지 기반(여러 칸)에서는 무게중심이 보통 훨씬 안쪽에 있어서 영향이 없다.
 	constexpr float IMBALANCE_DEADZONE = 2.0f;
 
+	// [무게 계산 완충 — Block::SmoothCombinedMass/SmoothCombinedComX 주석 참고, 2026-08-19] 불균형
+	// 에피소드 중 combinedMass/combinedComX를 지수 이동평균으로 부드럽게 이을 때 쓰는 시간상수(초).
+	// 작을수록 raw 값을 더 빨리 따라가고(완충 약함), 클수록 더 오래 걸려 따라간다(완충 강함, 하지만
+	// 진짜 붕괴 진행도 그만큼 늦게 반영됨). 0.1초면 약 0.3초(3배) 안에 대부분 수렴 — 한두 프레임(0.03초
+	// 내외)짜리 flicker는 걸러내면서도, 실제 다중 프레임에 걸친 변화(자식이 진짜로 떨어져나감 등)는
+	// 크게 안 늦게 따라간다. 값은 자리표시자라 체감에 맞게 조정할 것.
+	constexpr float WEIGHT_SMOOTHING_TIME_CONSTANT = 0.1f;
+
 	// [강제 취침 타임아웃] 지지대가 있는 블럭이 미세한 진동 때문에 속도가 계속 임계값을 살짝 넘나들어
 	// TrySleepAll의 정상 판정으로는 영원히 안 잠드는 경우를 위한 안전장치. Awake/Toppling 상태로
 	// 이 시간(초)을 넘기면, 지지대가 있는 한 속도와 무관하게 강제로 Sleeping 처리한다.
 	constexpr float FORCE_SLEEP_TIMEOUT = 3.0f;
+
+	// [공식 지지 없이 떠있는 채로 얼어붙는 버그 수정 — PhysicsManager::ResolveBalance의 !ComputeSupportDebugInfo
+	// 분기 주석 참고, 2026-08-19] 느슨한 겹침 판정으로는 여전히 뭔가에 물리적으로 닿아있어서(GROUNDED_
+	// VELOCITY_DAMPING이 계속 걸림) 중력을 거의 못 이기는데, 그 받침이 너무 기울어(IsNearAxisAlignedAngle
+	// 기준 밖) "공식 지지"로는 인정 안 돼서 ResolveBalance가 이 블록에 대해 아무 결정도 못 내리는 경우.
+	// Awake 상태로 이 시간(초)을 넘기면 자유낙하를 기다리는 대신 그냥 BeginToppling()으로 넘겨서 실제로
+	// 떨어지게 한다. FORCE_SLEEP_TIMEOUT과 같은 3초로 맞춤 — 정상적인 착지 과정(감쇠 없이도 몇 프레임
+	// 안에 보통 지지가 잡힘)을 방해하지 않으면서, 진짜로 안 풀리는 경우만 잡을 만큼 충분히 길다.
+	constexpr float NO_SUPPORT_TOPPLE_TIMEOUT = 3.0f;
 
 	// [넘어짐 끼임 타임아웃] Toppling 블럭이 옆 블럭이나 바닥 모서리에 끼어서(wedge) 더는 못 넘어가지도,
 	// 무게중심이 다시 지지 범위 안으로 돌아와 균형을 되찾지도 못하는 경우를 위한 안전장치.
@@ -196,6 +263,18 @@ namespace Constants
 	// 이유) — 순차 접촉점 처리 자체(더 근본적인 원인)는 위험해서 안 건드리고, 갓 깨어난 짧은 구간만 완충한다.
 	constexpr float WAKE_DAMPING_DURATION = 0.3f;
 	constexpr float WAKE_DAMPING_FACTOR = 0.9f;
+
+	// [지속 접촉 에너지 증가 완화 — round 8/11 완화책 2, 2026-08-19] WAKE_DAMPING은 "갓 깨어난" 0.3초만
+	// 완충해서, 그보다 오래(수십 스텝) 계속 붙어서 부딪히는 두 블록 사이의 누적 에너지 증가(실전 확인:
+	// 자유낙하로는 설명 안 되는 v=400+대)는 못 잡는다. 이 스텝 수를 넘도록 "진짜 충돌"이 끊기지 않고
+	// 이어지면, 그때부터 매 스텝 WAKE_DAMPING과 같은 방식(스텝 수가 늘수록 기하급수적으로 세짐)으로
+	// 감쇠를 건다.
+	// [기준을 훨씬 앞당김 — 실전 확인, 2026-08-19] 15스텝(0.25초)/0.9는 감쇠가 걸리기 전까지 이미
+	// v=94→222까지 커버려서 "툭 튀어나가는" 것처럼 보였다(WAKE_DAMPING이 같은 구간에 이미 걸려있었는데도
+	// 순차 접촉점 처리의 초반 에너지 증가율을 못 따라잡음). 임계값을 훨씬 낮추고(5스텝≈0.08초) 감쇠도
+	// 더 세게(0.85) 걸어서, WAKE_DAMPING과 겹치는 초반 구간부터 같이 눌러준다.
+	constexpr int SUSTAINED_COLLISION_DAMPING_THRESHOLD_STEPS = 5;
+	constexpr float SUSTAINED_COLLISION_DAMPING_FACTOR = 0.85f;
 
 	// [무한 재넘어짐 방지] 옆 블록 등에 막혀서 실제로는 못 넘어가는 블록이 Sleep 없이 이만큼 연속으로
 	// BeginToppling되면(Awake로 잠깐 돌아왔다가 ResolveBalance가 곧바로 또 넘어뜨리는 걸 반복하면),
@@ -245,15 +324,16 @@ namespace Constants
 	// 한 서브셀 낙하까지 걸리는 시간(초).
 	constexpr float FALL_STEP_INTERVAL = 0.4f;
 
-	// [시간에 따른 가속] 이 시간(초)마다 속도 레벨이 1씩 올라간다. 15초면 레벨 10에 2분 30초만에 도달.
-	constexpr float SPEED_LEVEL_UP_INTERVAL_SECONDS = 15.0f;
+	// [시간에 따른 가속 — 15초 단위 계단식에서 연속 가속으로 변경, 2026-08-19] 게임 시작(m_elapsedPlayTime=0)
+	// 부터 매 초 FALL_STEP_INTERVAL에서 이만큼(초)씩 꾸준히 줄어든다 — 15초마다 한 번에 훅 빨라지는 계단식
+	// 대신 첫 순간부터 조금씩 계속 빨라지는 체감을 준다(스텝 없이 매 프레임 그대로 반영되는 진짜 연속값).
+	// [증가 속도 3배로 확대 — 0.004는 너무 느리다는 피드백, 2026-08-19] 0.012면 (0.4-0.12)/0.012=23.3초에
+	// 하한 도달 — 예전(70초)보다 훨씬 빨리 최고 속도에 닿는다.
+	constexpr float FALL_INTERVAL_DECREASE_PER_SECOND = 0.012f;
 
-	// [시간에 따른 가속] 레벨 1당 FALL_STEP_INTERVAL에서 줄어드는 시간(초).
-	constexpr float FALL_INTERVAL_DECREASE_PER_LEVEL = 0.03f;
-
-	// [시간에 따른 가속] 아무리 레벨이 올라가도 이 값 밑으로는 안 내려감(하한).
-	// FALL_STEP_INTERVAL(0.4) 기준 약 레벨 9~10(4.5~5분)에서 도달해 그 뒤로는 속도가 고정된다.
-	// 체감이 너무 쉽거나 어려우면 세 값 다 조정할 것.
+	// [시간에 따른 가속] 아무리 시간이 지나도 이 값 밑으로는 안 내려감(하한).
+	// FALL_STEP_INTERVAL(0.4)/FALL_INTERVAL_DECREASE_PER_SECOND(0.012) 기준 약 23초에서 도달해
+	// 그 뒤로는 속도가 고정된다. 체감이 너무 쉽거나 어려우면 세 값 다 조정할 것.
 	constexpr float MIN_FALL_STEP_INTERVAL = 0.12f;
 
 	// [락 딜레이] 낙하 중인 블럭이 더 못 내려가는 상태로 이 시간(초) 이상 버티면 그때 착지(Lock) 확정한다.
@@ -273,8 +353,9 @@ namespace Constants
 	// [지지 판정 성능] IsCellSupported가 후보 블록의 실제 모서리(sin/cos 포함)를 계산하기 전에, 두 블록
 	// 원점 사이 Y거리로 먼저 거른다. 지금 실제로 스폰되는 블록(TetrominoBlock, 최대 I자 4칸=4타일)
 	// 기준으로 블록 원점에서 가장 먼 모서리까지의 거리보다 넉넉히 잡은 값 — 이 거리보다 멀면 절대 안
-	// 닿을 수 있으니 검사할 필요가 없다. GiantTetrominoBlock/HeavyBlock에 실제 모양이 생기면(이름상
-	// 더 클 수 있음) 이 값도 그에 맞게 다시 검토해야 한다.
+	// 닿을 수 있으니 검사할 필요가 없다. [GiantTetrominoBlock 구현, 2026-08-19] 확대된 I자(4칸 *
+	// TILE_SIZE * GIANT_BLOCK_SCALE_MULTIPLIER = 4*48*1.5 = 288px)도 이 값(8타일=384px)보다 작아서
+	// 지금 배율(1.5)까지는 안전하다 — GIANT_BLOCK_SCALE_MULTIPLIER를 더 키우면 이 값도 같이 검토할 것.
 	constexpr float SUPPORT_BROADPHASE_MAX_BLOCK_EXTENT = TILE_SIZE * 8.0f;
 
 	// [카메라] 목표 위치(targetY)를 따라가는 속도. 클수록 빨리 따라붙고 작을수록 느긋하게 따라간다.
@@ -407,6 +488,13 @@ namespace Constants
 	// 블럭 모양을 패널 정중앙보다 얼마나 아래로 내려서 그릴지(px, 양수=아래로)
 	constexpr float NEXT_PANEL_PREVIEW_OFFSET_Y = TILE_SIZE * 0.2f;
 
+	// [다음 블럭 미리보기 — "빅" 배지] 다음 블럭이 GiantTetrominoBlock이면 판넬 아래쪽에 이 가로 폭
+	// 기준으로 배지 스프라이트(assets/Big.png)를 같이 그린다 — 세로는 원본 비율 그대로(PlayScene::
+	// RenderNextBlockPreview가 bitmap->GetSize()로 계산) 유지되어 찌그러지지 않는다. 배지 중심을 판넬
+	// 아래쪽 가장자리에 두어서 절반 정도가 판넬과 살짝 겹치게 한다.
+	constexpr float NEXT_PANEL_BIG_BADGE_WIDTH = NEXT_PANEL_TARGET_WIDTH * 0.5f;
+	constexpr float NEXT_PANEL_BIG_BADGE_OFFSET_Y = NEXT_PANEL_TARGET_WIDTH / 2.0f;
+
 	// [타이틀 화면 - 옵션 패널] Option 버튼을 누르면 뜨는 볼륨 조절 오버레이. 화면 중앙에 뜬다
 	constexpr float OPTION_PANEL_CENTER_Y = WINDOW_HEIGHT * 0.5f;
 	// Pop.png(팝업창 배경 그림) 가로 크기를 이 값에 맞추고, 세로는 원본 비율 그대로 계산한다
@@ -442,9 +530,9 @@ namespace Constants
 	constexpr float CLOUD_MIN_HEIGHT_METERS = 10.0f;      // 이 높이 이상부터 구름이 스폰되기 시작
 	constexpr float CLOUD_HEIGHT_FOR_MAX_CHANCE = 30.0f;  // 이 높이에서 스폰 확률이 최대치에 도달
 	constexpr float CLOUD_SPAWN_CHECK_INTERVAL = 2.0f;    // 몇 초마다 한 번씩 스폰을 시도할지
-	constexpr float CLOUD_BASE_SPAWN_CHANCE = 0.6f;       // MIN_HEIGHT에 막 도달했을 때의 스폰 확률
+	constexpr float CLOUD_BASE_SPAWN_CHANCE = 0.8f;       // MIN_HEIGHT에 막 도달했을 때의 스폰 확률
 	constexpr float CLOUD_MAX_SPAWN_CHANCE = 0.85f;       // HEIGHT_FOR_MAX_CHANCE 이상일 때의 스폰 확률
-	constexpr int CLOUD_MAX_COUNT = 20;                    // 동시에 존재할 수 있는 최대 구름 개수
+	constexpr int CLOUD_MAX_COUNT = 50;                    // 동시에 존재할 수 있는 최대 구름 개수
 
 	constexpr float CLOUD_MIN_SCALE = 0.6f;               // 랜덤 크기 배율 최소
 	constexpr float CLOUD_MAX_SCALE = 1.6f;               // 랜덤 크기 배율 최대

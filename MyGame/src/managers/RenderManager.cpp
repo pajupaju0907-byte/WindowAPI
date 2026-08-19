@@ -423,7 +423,7 @@ void RenderManager::DrawCenterOfMass(ID2D1RenderTarget* renderTarget)
 	{
 		// 무게중심은 회전 피벗이기도 해서, 회전 여부와 상관없이 항상 이 좌표에 그대로 있다
 		// (ResolveRigidCollision이 centerOfMassWorld를 구할 때 쓰는 것과 동일한 계산)
-		Vector2 centerOfMassWorld = block->GetRenderPosition() + block->GetCenterOfMassLocal() * Constants::TILE_SIZE;
+		Vector2 centerOfMassWorld = block->GetRenderPosition() + block->GetCenterOfMassLocal() * block->GetCellSize();
 		Vector2 screenPos = CameraManager::GetInstance().WorldToScreen(centerOfMassWorld);
 
 		renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(screenPos.x, screenPos.y), RADIUS, RADIUS), brush.Get());

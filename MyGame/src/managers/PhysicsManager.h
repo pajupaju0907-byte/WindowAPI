@@ -5,6 +5,7 @@
 #include <vector>
 #include <unordered_map>
 #include <utility>
+#include <string>
 
 class Block;
 
@@ -20,6 +21,10 @@ public:
     using RestingChildrenMap = std::unordered_map<Block*, std::vector<std::pair<Block*, float>>>;
 
     static PhysicsManager& GetInstance();
+
+    // [임시 디버그] Block.cpp(ApplyGravityTorque/ResolveRigidCollision)에서도 physics_debug.log에
+    // 같은 파일/스텝 카운터로 로그를 남길 수 있게 해주는 통로. 원인 확정되면 이 통로와 호출부 모두 지운다.
+    static void LogDebug(const std::string& message);
 
     // BlockManager가 가진 블럭 전체를 순회하며 Awake 상태만 골라 ApplyGravity + Integrate 호출
     void Update(float deltaTime);

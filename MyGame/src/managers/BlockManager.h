@@ -62,15 +62,22 @@ private:
     // worldPoint가 데스존 안에 있는지 판정
     bool IsPointInDeathZone(Vector2 worldPoint) const;
 
-    // 무작위 모양의 테트로미노 하나를 새로 만든다(그리드 위치는 지정하지 않은 채로). SpawnBlock이
-    // 실제로 낙하시킬 블럭을 만들 때와, m_nextBlockPreview를 채울 때 공통으로 쓴다 — 모양을 뽑는
-    // 코드가 두 곳에 따로 있으면 나중에 어긋나기 쉬워서 한 곳으로 모았다.
+    // 무작위 모양의 테트로미노 하나를 새로 만든다(그리드 위치는 지정하지 않은 채로).
     std::unique_ptr<Block> CreateRandomTetromino();
+
+    // [다음 블럭 결정 — 자이언트 확률까지 포함] "다음 블럭 미리보기"를 채울 때 쓰는 진입점. 이 시점에
+    // GetGiantBlockSpawnChance()를 굴려서 자이언트인지 결정한다 — 미리보기와 실제 스폰이 항상
+    // 일치해야 하므로, 스폰되는 순간이 아니라 반드시 이 "다음 블럭을 정하는" 시점에만 굴린다.
+    std::unique_ptr<Block> CreateRandomNextBlock();
 
     // [시간에 따른 가속] m_elapsedPlayTime 기준으로 현재 속도 레벨을 계산해, 그 레벨에 맞는
     // 낙하 간격(초)을 리턴한다. SpawnBlock()과 UpdateFalling()이 m_fallTimer를 (재)설정할 때
     // Constants::FALL_STEP_INTERVAL 대신 이 함수를 쓴다 — 두 곳이 각자 계산하면 어긋나기 쉬워서 한 곳으로 모았다.
     float GetCurrentFallInterval() const;
+
+    // [GiantTetrominoBlock 확률 스폰] 현재 탑 높이(GetTallestHeightMeters()) 기준으로 이번 스폰이
+    // 자이언트가 될 확률을 반환한다. Constants::GIANT_BLOCK_SPAWN_CHANCE_* 주석 참고.
+    float GetGiantBlockSpawnChance() const;
 
     BlockManager() = default;
     ~BlockManager();
@@ -86,6 +93,10 @@ private:
     // 자리를 CreateRandomTetromino()로 다시 채운다 — "모양을 정하는 시점"과 "그 모양이 실제로
     // 떨어지기 시작하는 시점"을 분리해야 그 사이(=다음 블럭)를 미리 화면에 보여줄 수 있다.
     std::unique_ptr<Block> m_nextBlockPreview;
+
+    // [임시 테스트용 — CreateRandomNextBlock의 Z,Z,T 하드코딩 주석 참고] 이번 판에서 하드코딩된 순서를
+    // 몇 번째까지 소비했는지. 3이 되면 이후로는 원래(확률+무작위) 동작으로 돌아간다.
+    int m_hardcodedShapeSpawnIndex = 0;
 
     // 다음 그리드 낙하 스텝(StepDown)까지 남은 시간
     float m_fallTimer = 0.0f;

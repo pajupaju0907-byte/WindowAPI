@@ -32,6 +32,9 @@ void PlayScene::Enter()
     ResourceManager::GetInstance().LoadSprite("assets/bottomcenter.png");
     ResourceManager::GetInstance().LoadSprite("assets/bottomright.png");
     ResourceManager::GetInstance().LoadSprite("assets/Next.png");
+    // [자이언트 예고 배지] 사용자가 직접 그려서 assets/Big.png로 넣을 예정 — 아직 파일이 없어도
+    // LoadSprite가 조용히 실패하고 넘어가므로(ResourceManager::LoadSprite 주석 참고) 안전하다.
+    ResourceManager::GetInstance().LoadSprite("assets/Big.png");
 
     SoundManager::GetInstance().PlayBgm("assets/Sound/IlliyardMoor.mp3");
 
@@ -176,10 +179,11 @@ void PlayScene::RenderDropGuide(ID2D1RenderTarget* renderTarget)
     float columnBottomY[MAX_COLUMNS];
     int columnCount = 0;
 
+    float fallingCellSize = fallingBlock->GetCellSize();
     for (int cellIndex = 0; cellIndex < fallingBlock->GetCellCount(); ++cellIndex)
     {
         Vector2 cellPos = fallingBlock->GetCellRenderPosition(cellIndex);
-        float cellBottomY = cellPos.y + Constants::TILE_SIZE;
+        float cellBottomY = cellPos.y + fallingCellSize;
 
         int existingColumn = -1;
         for (int c = 0; c < columnCount; ++c)
@@ -211,16 +215,16 @@ void PlayScene::RenderDropGuide(ID2D1RenderTarget* renderTarget)
         // 발판(FLOOR_LEFT_X~FLOOR_RIGHT_X) 위 열은 바닥 윗면에서 끊고, 그 옆 절벽(발판 없는 열)은
         // 바닥이 없으니 대신 지금 보이는 화면 맨 아래(BlockManager::GetDeathZoneTopY, 카메라를 따라
         // 움직임)까지 그린다 — 안 그러면 발판 옆에서만 유독 짧게 뚝 끊겨 보인다.
-        bool overlapsFloor = columnX[c] + Constants::TILE_SIZE > Constants::FLOOR_LEFT_X && columnX[c] < Constants::FLOOR_RIGHT_X;
+        bool overlapsFloor = columnX[c] + fallingCellSize > Constants::FLOOR_LEFT_X && columnX[c] < Constants::FLOOR_RIGHT_X;
         float guideBottomY = overlapsFloor ? Constants::FLOOR_TOP_Y : BlockManager::GetInstance().GetDeathZoneTopY();
         if (guideBottomY <= columnBottomY[c])
         {
             continue;
         }
 
-        Vector2 worldCenter = { columnX[c] + Constants::TILE_SIZE / 2.0f, (columnBottomY[c] + guideBottomY) / 2.0f };
+        Vector2 worldCenter = { columnX[c] + fallingCellSize / 2.0f, (columnBottomY[c] + guideBottomY) / 2.0f };
         Vector2 screenCenter = CameraManager::GetInstance().WorldToScreen(worldCenter);
-        RenderManager::GetInstance().FillRect(renderTarget, screenCenter, { Constants::TILE_SIZE, guideBottomY - columnBottomY[c] }, Constants::DROP_GUIDE_COLOR, Constants::DROP_GUIDE_OPACITY);
+        RenderManager::GetInstance().FillRect(renderTarget, screenCenter, { fallingCellSize, guideBottomY - columnBottomY[c] }, Constants::DROP_GUIDE_COLOR, Constants::DROP_GUIDE_OPACITY);
     }
 }
 
@@ -240,11 +244,36 @@ void PlayScene::RenderNextBlockPreview(ID2D1RenderTarget* renderTarget)
         return;
     }
 
+    // [자이언트 예고 배지] 다음 블럭이 GiantTetrominoBlock이면 판넬 아래쪽에 "BIG" 배지를 겹쳐 그린다.
+    // 스프라이트가 아직 없어도(ResourceManager::LoadSprite 실패) bitmap이 비어서 조용히 안 그려질 뿐,
+    // 크래시로 이어지지 않는다.
+    if (nextBlock->IsGiant())
+    {
+        const SpriteInfo& bigBadgeSprite = ResourceManager::GetInstance().GetSpriteInfo("assets/Big.png");
+        if (bigBadgeSprite.bitmap)
+        {
+            // [원본 비율 유지] 가로를 NEXT_PANEL_BIG_BADGE_WIDTH에 맞추고 세로는 원본 가로세로 비율
+            // 그대로 계산한다(GameOverScene::Render의 배경/타이틀 이미지 스케일링과 같은 방식) —
+            // 정사각형으로 강제로 늘리면 원본 이미지가 찌그러진다.
+            D2D1_SIZE_F nativeSize = bigBadgeSprite.bitmap->GetSize();
+            float badgeHeight = Constants::NEXT_PANEL_BIG_BADGE_WIDTH * (nativeSize.height / nativeSize.width);
+            Vector2 badgeCenter = panelCenter + Vector2{ 0.0f, Constants::NEXT_PANEL_BIG_BADGE_OFFSET_Y };
+            RenderManager::GetInstance().DrawSpriteRotated(renderTarget, bigBadgeSprite, badgeCenter,
+                { Constants::NEXT_PANEL_BIG_BADGE_WIDTH, badgeHeight }, 0.0f, 0);
+        }
+    }
+
     // nextBlock은 그리드 위치를 지정한 적이 없어 (0,0) 기준 로컬 좌표로 칸들이 나온다. 그 모양
-    // 자체의 가로세로 중심(GetWorldBounds)을 구해서, 그 중심이 판넬 중앙(+세로 오프셋)에 오도록 맞춰 그린다
+    // 자체의 가로세로 중심(GetWorldBounds)을 구해서, 그 중심이 판넬 중앙(+세로 오프셋)에 오도록 맞춰 그린다.
+    // [자이언트 미리보기 깨짐 수정] GetWorldBounds()/GetCellRenderPosition()은 실제 칸 크기(GetCellSize())로
+    // 계산되므로, 자이언트 블록은 이 좌표들이 전부 1.5배 커진 채로 나온다. scale/오프셋을 고정된
+    // Constants::TILE_SIZE가 아니라 nextBlock->GetCellSize()로 나누면, 실제 칸이 몇 px든 항상 같은
+    // NEXT_PANEL_PREVIEW_TILE_SIZE 기준 미리보기 크기로 맞춰져서(=일반 블록과 똑같은 크기로) 그려진다 —
+    // "블럭 자체는 그대로, 커진 건 배지로만 표시" 요청대로.
+    float nextBlockCellSize = nextBlock->GetCellSize();
     AABB shapeBounds = nextBlock->GetWorldBounds();
     Vector2 shapeCenterLocal = { (shapeBounds.min.x + shapeBounds.max.x) / 2.0f, (shapeBounds.min.y + shapeBounds.max.y) / 2.0f };
-    float scale = Constants::NEXT_PANEL_PREVIEW_TILE_SIZE / Constants::TILE_SIZE;
+    float scale = Constants::NEXT_PANEL_PREVIEW_TILE_SIZE / nextBlockCellSize;
     Vector2 previewCenter = panelCenter + Vector2{ 0.0f, Constants::NEXT_PANEL_PREVIEW_OFFSET_Y };
 
     const SpriteInfo& blockSprite = ResourceManager::GetInstance().GetSpriteInfo(nextBlock->GetSpriteId());
@@ -252,7 +281,7 @@ void PlayScene::RenderNextBlockPreview(ID2D1RenderTarget* renderTarget)
 
     for (int cellIndex = 0; cellIndex < nextBlock->GetCellCount(); ++cellIndex)
     {
-        Vector2 cellLocalCenter = nextBlock->GetCellRenderPosition(cellIndex) + Vector2{ Constants::TILE_SIZE / 2.0f, Constants::TILE_SIZE / 2.0f };
+        Vector2 cellLocalCenter = nextBlock->GetCellRenderPosition(cellIndex) + Vector2{ nextBlockCellSize / 2.0f, nextBlockCellSize / 2.0f };
         Vector2 drawCenter = previewCenter + (cellLocalCenter - shapeCenterLocal) * scale;
 
         RenderManager::GetInstance().DrawSpriteRotated(renderTarget, blockSprite, drawCenter, { Constants::NEXT_PANEL_PREVIEW_TILE_SIZE, Constants::NEXT_PANEL_PREVIEW_TILE_SIZE }, 0.0f, 0, 1.0f, &colorSourceRect);
@@ -293,7 +322,8 @@ void PlayScene::Render(ID2D1RenderTarget* renderTarget)
         for (int cellIndex = 0; cellIndex < block->GetCellCount(); ++cellIndex)
         {
             Vector2 cellScreenCenter = CameraManager::GetInstance().WorldToScreen(block->GetCellCenterRotated(cellIndex));
-            RenderManager::GetInstance().DrawSpriteRotated(renderTarget, blockSprite, cellScreenCenter, { Constants::TILE_SIZE, Constants::TILE_SIZE }, block->GetAngle(), 0, 1.0f, &colorSourceRect);
+            float cellDrawSize = block->GetCellSize();
+            RenderManager::GetInstance().DrawSpriteRotated(renderTarget, blockSprite, cellScreenCenter, { cellDrawSize, cellDrawSize }, block->GetAngle(), 0, 1.0f, &colorSourceRect);
         }
     }
 

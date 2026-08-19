@@ -28,6 +28,29 @@ std::unique_ptr<Block> BlockManager::CreateRandomTetromino()
     return std::make_unique<TetrominoBlock>(randomShape);
 }
 
+std::unique_ptr<Block> BlockManager::CreateRandomNextBlock()
+{
+    // [임시 테스트용 — Z,Z,T 순서 하드코딩, 2026-08-19] "Z 옆에 Z, 그 옆에 T" 재현 케이스를 매번 새로
+    // 쌓지 않고 바로 테스트하려고, 이번 판에서 나오는 첫 3개는 항상 이 순서로 고정한다(자이언트 확률도
+    // 같이 건너뜀). 확인 끝나면 이 블록(if문 전체)만 지우면 원래(확률+무작위) 동작으로 돌아간다.
+    if (m_hardcodedShapeSpawnIndex < 3)
+    {
+        static const TetrominoShape kHardcodedOrder[3] = { TetrominoShape::Z, TetrominoShape::Z, TetrominoShape::T };
+        TetrominoShape shape = kHardcodedOrder[m_hardcodedShapeSpawnIndex];
+        ++m_hardcodedShapeSpawnIndex;
+        return std::make_unique<TetrominoBlock>(shape);
+    }
+
+    // [GiantTetrominoBlock 확률 스폰 — Constants::GIANT_BLOCK_SPAWN_CHANCE_* 주석 참고] "다음 블럭"을
+    // 뽑는 이 시점에 확률을 굴려야, 미리보기 패널에 보이는 게 실제로 그대로 떨어진다(스폰되는 순간에
+    // 다시 굴리면 미리보기와 실제가 어긋난다). 그래서 SpawnBlock(BlockType::Tetromino)이 아니라 여기서만 굴린다.
+    if (static_cast<float>(rand()) / static_cast<float>(RAND_MAX) < GetGiantBlockSpawnChance())
+    {
+        return std::make_unique<GiantTetrominoBlock>(static_cast<TetrominoShape>(rand() % 7));
+    }
+    return CreateRandomTetromino();
+}
+
 void BlockManager::SpawnBlock(BlockType type)
 {
     std::unique_ptr<Block> spawnedBlock;
@@ -35,13 +58,13 @@ void BlockManager::SpawnBlock(BlockType type)
     {
     case BlockType::Tetromino:
         // 새로 랜덤을 뽑지 않고, Reset()/직전 SpawnBlock() 호출에서 미리 뽑아둔 m_nextBlockPreview를
-        // 그대로 이번에 낙하시킬 블럭으로 쓴다. 그리고 빠진 자리를 곧바로 다시 채워둬야 다음 번에도
-        // "미리 뽑아둔 다음 블럭"이 항상 존재한다.
+        // 그대로 이번에 낙하시킬 블럭으로 쓴다(자이언트 여부까지 이미 결정되어 있음). 그리고 빠진
+        // 자리를 곧바로 다시 채워둬야 다음 번에도 "미리 뽑아둔 다음 블럭"이 항상 존재한다.
         spawnedBlock = std::move(m_nextBlockPreview);
-        m_nextBlockPreview = CreateRandomTetromino();
+        m_nextBlockPreview = CreateRandomNextBlock();
         break;
     case BlockType::GiantTetromino:
-        spawnedBlock = std::make_unique<GiantTetrominoBlock>();
+        spawnedBlock = std::make_unique<GiantTetrominoBlock>(static_cast<TetrominoShape>(rand() % 7));
         break;
     case BlockType::Heavy:
         spawnedBlock = std::make_unique<HeavyBlock>();
@@ -101,11 +124,25 @@ void BlockManager::UpdateFalling(float deltaTime)
 
 float BlockManager::GetCurrentFallInterval() const
 {
-    // 30초(SPEED_LEVEL_UP_INTERVAL_SECONDS)마다 레벨 1씩, 레벨당 FALL_INTERVAL_DECREASE_PER_LEVEL(초)만큼
-    // 줄인다. static_cast<int>로 내림해서 "딱 30초가 지나야" 다음 레벨이 되게 한다(계단식).
-    int speedLevel = static_cast<int>(m_elapsedPlayTime / Constants::SPEED_LEVEL_UP_INTERVAL_SECONDS);
-    float interval = Constants::FALL_STEP_INTERVAL - speedLevel * Constants::FALL_INTERVAL_DECREASE_PER_LEVEL;
+    // [연속 가속 — 계단식(레벨) 대신 매초 조금씩] 게임 시작 순간부터 경과 시간에 정비례해서 계속
+    // 줄어든다 — 15초 단위로 한 번에 훅 빨라지던 예전 계단식과 달리, 첫 순간부터 꾸준히 빨라지는
+    // 느낌을 준다.
+    float interval = Constants::FALL_STEP_INTERVAL - m_elapsedPlayTime * Constants::FALL_INTERVAL_DECREASE_PER_SECOND;
     return std::max(interval, Constants::MIN_FALL_STEP_INTERVAL);
+}
+
+float BlockManager::GetGiantBlockSpawnChance() const
+{
+    float heightMeters = GetTallestHeightMeters();
+    if (heightMeters >= Constants::GIANT_BLOCK_SPAWN_CHANCE_HEIGHT_TIER_2_METERS)
+    {
+        return Constants::GIANT_BLOCK_SPAWN_CHANCE_ABOVE_TIER_2;
+    }
+    if (heightMeters >= Constants::GIANT_BLOCK_SPAWN_CHANCE_HEIGHT_TIER_1_METERS)
+    {
+        return Constants::GIANT_BLOCK_SPAWN_CHANCE_TIER_1_TO_2;
+    }
+    return Constants::GIANT_BLOCK_SPAWN_CHANCE_BELOW_TIER_1;
 }
 
 void BlockManager::MoveCurrentBlock(int subCellDelta)
@@ -174,10 +211,11 @@ bool BlockManager::IsGameOver() const
 void BlockManager::Reset()
 {
     m_blocks.clear(), m_currentFallingBlock = nullptr, m_isGameOver = false, m_fallTimer = m_lockDelayTimer = m_moveTimer = m_elapsedPlayTime = 0.0f;
+    m_hardcodedShapeSpawnIndex = 0;
 
     // 첫 SpawnBlock(BlockType::Tetromino) 호출 전에 "다음 블럭"이 미리 준비되어 있어야
     // 미리보기가 게임 시작 직후부터 빈 채로 있지 않는다.
-    m_nextBlockPreview = CreateRandomTetromino();
+    m_nextBlockPreview = CreateRandomNextBlock();
 }
 
 float BlockManager::GetDeathZoneTopY() const

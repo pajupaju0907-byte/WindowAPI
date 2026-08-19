@@ -63,6 +63,11 @@ PhysicsManager& PhysicsManager::GetInstance()
     return instance;
 }
 
+void PhysicsManager::LogDebug(const std::string& message)
+{
+    LogFreezeDebug(message);
+}
+
 PhysicsManager::~PhysicsManager() = default;
 
 void PhysicsManager::Update(float deltaTime)
@@ -201,6 +206,32 @@ void PhysicsManager::Step(float deltaTime)
         block->DampAngularVelocity(chainDampingFactor);
     }
 
+    // 2.7. [지속 접촉 에너지 증가 완화] Constants::SUSTAINED_COLLISION_DAMPING_THRESHOLD_STEPS 주석
+    // 참고 — 이번 스텝에 실제로 충돌이 있었는지를 먼저 확정(AdvanceSustainedCollisionTracking)한 뒤,
+    // 그게 임계 스텝 수를 넘도록 끊기지 않고 이어진 블록에만 감쇠를 건다. WAKE_DAMPING(2.6단계)과
+    // 달리 "갓 깨어났는지"와 무관하게 "얼마나 오래 계속 부딪히고 있는지"만 본다.
+    for (Block* block : BlockManager::GetInstance().GetAllBlocks())
+    {
+        bool isActive = block->GetPhysicsState() == PhysicsState::Awake || block->GetPhysicsState() == PhysicsState::Toppling;
+        if (!isActive)
+        {
+            continue;
+        }
+
+        block->AdvanceSustainedCollisionTracking();
+
+        int sustainedSteps = block->GetSustainedCollisionSteps();
+        if (sustainedSteps <= Constants::SUSTAINED_COLLISION_DAMPING_THRESHOLD_STEPS)
+        {
+            continue;
+        }
+
+        float overThreshold = static_cast<float>(sustainedSteps - Constants::SUSTAINED_COLLISION_DAMPING_THRESHOLD_STEPS);
+        float sustainedDampingFactor = std::pow(Constants::SUSTAINED_COLLISION_DAMPING_FACTOR, overThreshold);
+        block->DampVelocity(sustainedDampingFactor);
+        block->DampAngularVelocity(sustainedDampingFactor);
+    }
+
     // [댕글링 포인터 방지] RemoveToppledBlocks()는 반드시 BuildRestingChildrenMap()보다 먼저 실행돼야
     // 한다. 화면 밖으로 나간 Toppling 블록을 여기서 먼저 지워야, 그 블록이 (지워지기 직전 순간의 낡은
     // 스냅샷으로) restingChildren에 "누군가의 위에 얹힌 자식"으로 남아있다가 SettleToppledBlocks의
@@ -246,11 +277,13 @@ void PhysicsManager::Step(float deltaTime)
 
     // current부터 시작해서 restingChildren을 따라 자식 쪽으로 재귀한다. forceSkip이 true면(이미 이번
     // 프레임에 자신의 base 어딘가가 불안정 처리됐다는 뜻) ResolveBalance 자체를 호출하지 않고, 그 결과를
-    // 그대로 자식에게도 물려준다 — 한 번 스킵이 시작되면 그 위로는 전부 같이 스킵된다. Toppling 상태인
-    // 블록(current 자신이 pass-through 중일 수 있음)은 ResolveBalance/안전장치 대상이 아니지만, 그 위에
-    // 얹힌 자식들에게 도달하려면 재귀 자체는 계속돼야 하므로 자식 순회는 항상 한다. Step()의 절대각
-    // 안전장치는 스킵 여부와 무관하게 원래처럼 모든 Awake/Sleeping 블록에 그대로 적용한다 — ResolveBalance
-    // 캐스케이드와는 별개의 안전판이라서다.
+    // 그대로 자식에게도 물려준다. Toppling 상태인 블록(current 자신이 pass-through 중일 수 있음)은
+    // ResolveBalance/안전장치 대상이 아니지만, 그 위에 얹힌 자식들에게 도달하려면 재귀 자체는 계속돼야
+    // 하므로 자식 순회는 항상 한다. Step()의 절대각 안전장치는 스킵 여부와 무관하게 원래처럼 모든
+    // Awake/Sleeping 블록에 그대로 적용한다 — ResolveBalance 캐스케이드와는 별개의 안전판이라서다.
+    // [자식이 base의 전체 불균형 기간 내내 얼어붙는 문제 수정] childForceSkip 계산부 주석 참고 — base가
+    // "새로" 불균형을 시작한 그 한 프레임만 자식에게 스킵을 물려주고, base가 계속 기울어지는(느리게
+    // 넘어가는) 나머지 기간에는 자식도 매 프레임 독립적으로 재평가된다.
     std::function<void(Block*, bool)> resolveBalanceCascade = [&](Block* current, bool forceSkip)
     {
         if (std::find(balanceVisited.begin(), balanceVisited.end(), current) != balanceVisited.end())
@@ -262,6 +295,24 @@ void PhysicsManager::Step(float deltaTime)
         PhysicsState currentState = current->GetPhysicsState();
         bool isEligible = currentState == PhysicsState::Awake || currentState == PhysicsState::Sleeping;
         bool wasProcessed = false;
+
+        // [임시 디버그] forceSkip으로 ResolveBalance 자체가 스킵된 프레임을 남긴다 — 불균형 타이머가
+        // 멈춘 채(끝없이 skip)로 남는 케이스를 확인하기 위함.
+        if (isEligible && forceSkip && current->GetImbalanceTimer() > 0.0f)
+        {
+            LogFreezeDebug("[CASCADE-SKIP] " + DescribeBlock(current));
+        }
+
+        // [지지대가 느리게 넘어가는 동안 자식이 무한정 얼어붙는 문제 수정 — 실전 로그로 확인됨] 자식을
+        // forceSkip하는 원래 의도는 "같은 프레임에 여러 층이 동시에 넘어지기 시작하는 것"만 막는 것이었는데
+        // (childForceSkip 계산부 주석 참고), 실제로는 base가 완전히 넘어갈 때까지(TOPPLE_STUCK_TIMEOUT
+        // 3초 또는 MAX_TOPPLE_ANGLE 도달까지) "wasProcessed=true"가 계속 나와서 그 몇 초 내내 자식이
+        // 한 번도 자기 지지 상태를 재평가 못 하고 완전히 얼어붙는다(physics_debug.log에서 자식 블록이
+        // [CASCADE-SKIP]으로 1초 넘게 60번 이상 연속으로 찍히는 것으로 확인됨 — 명백히 무너져야 할 구조가
+        // 안 무너지는 것처럼 보이는 원인). base가 이번 프레임에 "새로" 불균형을 시작한 경우(같은 프레임
+        // 동시 시작 방지가 실제로 필요한 그 순간)만 스킵을 전파하고, 그 이후 프레임(base가 계속 기울어지는
+        // 중)에는 자식도 매 프레임 독립적으로 다시 평가하게 한다.
+        bool wasNewEpisodeBeforeResolve = current->GetImbalanceTimer() <= 0.0f;
 
         if (isEligible)
         {
@@ -287,7 +338,7 @@ void PhysicsManager::Step(float deltaTime)
             }
         }
 
-        bool childForceSkip = forceSkip || wasProcessed;
+        bool childForceSkip = forceSkip || (wasProcessed && wasNewEpisodeBeforeResolve);
         auto childrenIt = restingChildren.find(current);
         if (childrenIt != restingChildren.end())
         {
@@ -422,6 +473,18 @@ void PhysicsManager::ResolveBlockPairCollision(Block* block, Block* other, bool 
         // 블록이 이미 움직이던 다른 블록을 침)는 깨울 필요가 없어서 여태 전혀 로그가 안 남았다 — 그래서
         // 갑자기 v=600대의 큰 값이 로그에 나타나도 누가/왜 쳤는지 추적할 방법이 없었다.
         LogFreezeDebug("[COLLISION] fast-awake a=(" + DescribeBlock(block) + ") b=(" + DescribeBlock(other) + ")");
+    }
+
+    // [지속 접촉 에너지 증가 완화 — Block::GetSustainedCollisionSteps 선언부 주석 참고] "진짜 충돌"
+    // 판정을 받은 쪽에 이번 스텝에 접촉이 있었다고 표시해둔다. Step()이 매 스텝 끝에서 이걸 읽어
+    // 몇 스텝 연속으로 이어지는지 센다.
+    if (blockIsRealImpact)
+    {
+        block->MarkRealImpactThisStep();
+    }
+    if (otherIsRealImpact)
+    {
+        other->MarkRealImpactThisStep();
     }
 
     // [붕괴 충돌음] 둘 중 하나가 무게중심이 무너져 회전+낙하 이탈 중인 상태(Toppling)이고, 그 블록이
@@ -988,6 +1051,26 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const Resting
 			LogFreezeDebug("[STUCK?] awake-no-support-low-speed " + DescribeBlock(block));
 		}
 
+        // [공식 지지 없이 몇 초씩 "떠있는" 채로 얼어붙는 버그 수정 — 실전 로그로 확인됨] 이 블록이
+        // BuildRestingChildrenMap의 느슨한 겹침 판정(CountCellsRestingOnBlock, 각도 무관)으로는 여전히
+        // 누군가의 "자식"으로 등록돼 있어서(=진짜로 뭔가에 물리적으로 닿아 있어서) Step() 2.5단계의
+        // GROUNDED_VELOCITY_DAMPING이 계속 걸리는데, 그 받침(예: 40도 넘게 기울어 무너지는 중인 이웃)이
+        // IsNearAxisAlignedAngle(5도) 기준을 넘어서 "공식적으로 못 믿을 지지면"이 되면 여기(!ComputeSupportDebugInfo)
+        // 로 빠져서 ResolveBalance가 이 블록에 대해선 아무 것도 안 하고 매번 조용히 빠져나간다 — 그 결과
+        // 실제로는 닿아있는 채로 감쇠만 계속 받아서 중력을 거의 못 이기고, 수 초씩 거의 제자리에서 아주
+        // 느리게 미끄러지기만 하는(physics_debug.log에서 5초 넘게 Y좌표가 8px밖에 안 바뀌는 것으로 확인)
+        // "떠있는 정지" 상태가 된다. m_activeTimer(Awake로 전환된 뒤 안 끊기고 누적되는 시간)가
+        // NO_SUPPORT_TOPPLE_TIMEOUT을 넘으면, 자유낙하로 이어지길 기다리는 대신 그냥 BeginToppling()으로
+        // 직접 넘겨서 순수 중력+충돌(감쇠 없음)로 실제 떨어지게 한다 — Toppling 상태는 이미 Step() 2.5단계
+        // 감쇠에서 제외되어 있으므로(위 주석 참고) 이 damping 함정 자체에서 완전히 벗어난다.
+        if (block->GetPhysicsState() == PhysicsState::Awake &&
+            block->GetActiveTimer() >= Constants::NO_SUPPORT_TOPPLE_TIMEOUT)
+        {
+            LogFreezeDebug("[TOPPLING] no-support-timeout " + DescribeBlock(block));
+            block->BeginToppling();
+            return true;
+        }
+
         // [지지 flicker로 영원히 안 풀리는 불균형 버그 수정 — 실전 로그로 확인됨] 여기서 예전처럼
         // ResetImbalanceTimer()로 즉시 0을 만들면 안 된다 — 세게 부딪혀 각속도가 큰 블록은 흔들리는
         // 도중 회전된 모서리가 SUPPORT_CHECK_TOLERANCE 판정 창을 한두 프레임만 살짝 벗어나도 여기로
@@ -1001,6 +1084,34 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const Resting
 
         return false;
     }
+
+    // [임시 디버그 — combinedMass가 프레임마다 뒤집히는 문제 추적] 이미 불균형 진행 중인 블록에 한해,
+    // 이번 프레임에 "내 위에 얹혀있다"고 카운트된 직계 자식 목록을 그대로 남긴다. combinedMass가
+    // 프레임마다 널뛰면 여기서 자식이 프레임마다 나타났다 사라졌다 하는 걸 바로 볼 수 있다.
+    if (block->GetImbalanceTimer() > 0.0f)
+    {
+        auto childrenIt = childrenOf.find(block);
+        std::ostringstream oss;
+        oss << "children=[";
+        if (childrenIt != childrenOf.end())
+        {
+            for (const std::pair<Block*, float>& entry : childrenIt->second)
+            {
+                oss << entry.first << "(w=" << entry.second << ") ";
+            }
+        }
+        oss << "]";
+        LogFreezeDebug("[CHILDREN-TRACE] " + oss.str() + " " + DescribeBlock(block));
+    }
+
+    // [무게 계산 완충 — Block::SmoothCombinedMass/SmoothCombinedComX 선언부 주석 참고] raw로 계산된
+    // combinedMass/centerOfMassX를 곧바로 쓰지 않고, 지수 이동평균으로 부드럽게 이은 값으로 바꿔치기
+    // 한다. 이 아래로는(불균형 판정/pivot 방향/토크 계산 전부) 전부 이 완충된 값을 그대로 쓰게 되므로,
+    // 판정 기준이 항상 서로 일치한다. GetImbalanceTimer()<=0(아직 이번 프레임에 AdvanceImbalanceTimer가
+    // 안 불린 시점 기준)이면 "새 에피소드 시작"으로 보고 raw 값 그대로 스냅한다.
+    bool isNewEpisodeForSmoothing = block->GetImbalanceTimer() <= 0.0f;
+    combinedMass = block->SmoothCombinedMass(combinedMass, isNewEpisodeForSmoothing, deltaTime);
+    centerOfMassX = block->SmoothCombinedComX(centerOfMassX, isNewEpisodeForSmoothing, deltaTime);
 
     // [진짜 중력 토크] 순간적으로 각속도를 꽂아넣던 예전 방식(TUMBLE_ANGULAR_VELOCITY 킥) 대신, 무게중심이
     // 지지 범위를 벗어난 채로 있는 한 매 프레임 실제 중력 토크(ApplyGravityTorque)를 계속 걸어준다.
@@ -1180,6 +1291,16 @@ bool PhysicsManager::ResolveBalance(Block* block, float deltaTime, const Resting
     }
 
     block->ApplyGravityTorque(pivot, centerOfMassX, combinedMass, deltaTime);
+
+    // [임시 디버그] 왜 토크가 걸려도 각속도가 안 붙는지 프레임별로 추적하기 위한 임시 로그.
+    // 원인 확정되면 지운다.
+    {
+        std::ostringstream traceOss;
+        traceOss << "pivot=(" << pivot.x << "," << pivot.y << ") combinedComX=" << centerOfMassX
+            << " combinedMass=" << combinedMass << " angle=" << block->GetAngle()
+            << " angularVel=" << block->GetAngularVelocity() << " v=" << std::sqrt(block->GetSpeedSquared());
+        LogFreezeDebug("[IMBALANCE-TRACE] " + traceOss.str() + " " + DescribeBlock(block));
+    }
 
     // [연쇄 붕괴 전파] block 하나만 넘어뜨린다. block이 떠받치던 덩어리 전체에 같은 각속도를 강제로
     // 주지 않는다 — 블록마다 무게중심/관성모멘트가 달라서 같은 각속도를 받아도 다르게 움직여야
